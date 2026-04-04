@@ -1022,8 +1022,8 @@ function render() {
   // ── Filter menus ───────────────────────────────────────────────
   if (activeFilterMenu) {
     let menuHtml =
-      '<div class="filter-menu open" style="top: 150px; left: ' +
-      (activeFilterMenu === "name" ? 250 : 20) + 'px;" onclick="event.stopPropagation()">';
+      '<div class="filter-menu open" style="top: ' + filterMenuPosition.top + 'px; left: ' +
+      filterMenuPosition.left + 'px;" onclick="event.stopPropagation()">';
     menuHtml += "<strong>Filter " + (activeFilterMenu === "name" ? "by Name" : "by Type") + "</strong><br><br>";
 
     if (activeFilterMenu === "type") {

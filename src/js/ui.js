@@ -782,6 +782,14 @@ function toggleFilterMenu(column, event) {
     activeFilterMenu = null;
   } else {
     activeFilterMenu = column;
+    if (event && event.currentTarget && gridEl) {
+      const triggerRect = event.currentTarget.getBoundingClientRect();
+      const gridRect = gridEl.getBoundingClientRect();
+      filterMenuPosition = {
+        top: Math.max(8, triggerRect.bottom - gridRect.top + 6),
+        left: Math.max(8, triggerRect.left - gridRect.left),
+      };
+    }
   }
   render();
   if (event) event.stopPropagation();

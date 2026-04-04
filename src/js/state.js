@@ -55,7 +55,7 @@ try {
 
 let nextId = 1;
 let nextPersonId = 1;
-let years = ["2026", "2027", "2028"];
+let years = ["2025", "2026", "2027", "2028"];
 let hiddenYears = new Set();
 let alarms = [];
 let holidays = [];
@@ -76,6 +76,7 @@ let commentWidth = 200;
 let nameWidthBase = 350;
 let filters = { name: [], type: [] };
 let activeFilterMenu = null;
+let filterMenuPosition = { top: 0, left: 0 };
 
 // Block Comment State
 let draggingCommentId = null;
