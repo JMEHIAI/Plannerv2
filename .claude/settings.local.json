@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find \"c:\\\\DiskD\\\\AI\\\\DIAGLO\\\\Antigravity\\\\h-customer-performance-planner-small\" -type f \\\\\\( -name \"*.js\" -o -name \"*.css\" \\\\\\) -exec ls -lh {} \\\\;)",
+      "Read(//c/DiskD/AI/DIAGLO/Antigravity/h-customer-performance-planner-small/**)",
+      "Bash(grep -n \"addEventListener\\\\|removeEventListener\" \"c:\\\\DiskD\\\\AI\\\\DIAGLO\\\\Antigravity\\\\h-customer-performance-planner-small/src/js/\"*.js)",
+      "Bash(grep -n \"setInterval\\\\|setTimeout\" \"c:\\\\DiskD\\\\AI\\\\DIAGLO\\\\Antigravity\\\\h-customer-performance-planner-small/src/js/\"*.js)",
+      "Bash(grep -n \"innerHTML\\\\|insertAdjacentHTML\" \"c:\\\\DiskD\\\\AI\\\\DIAGLO\\\\Antigravity\\\\h-customer-performance-planner-small/src/js/\"*.js)",
+      "Bash(grep -n \"\\\\.join\\(''\\)\" \"c:\\\\DiskD\\\\AI\\\\DIAGLO\\\\Antigravity\\\\h-customer-performance-planner-small/src/js/\"*.js)",
+      "Bash(node --check \"c:/DiskD/AI/DIAGLO/Antigravity/h-customer-performance-planner-small/src/js/render.js\")",
+      "Bash(node --check \"c:/DiskD/AI/DIAGLO/Antigravity/h-customer-performance-planner-small/src/js/interactions.js\")",
+      "Bash(node --check \"c:/DiskD/AI/DIAGLO/Antigravity/h-customer-performance-planner-small/src/js/state.js\")",
+      "Bash(node --check \"c:/DiskD/AI/DIAGLO/Antigravity/h-customer-performance-planner-small/src/js/ui.js\")",
+      "Bash(node -e ':*)",
+      "Bash(node --check src/js/render.js)"
+    ]
+  }
+}

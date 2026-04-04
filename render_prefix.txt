@@ -1,0 +1,134 @@
+// ═══════════════════════════════════════════════════════════════
+//  RENDER ENGINE + DISPLAY ITEMS + EFFECTIVE DURATION
+// ═══════════════════════════════════════════════════════════════
+
+const gridEl = document.getElementById("grid");
+
+// Month names constant (never changes, no need to recreate every render)
+const _MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// Cache for dynamicMonthSpans — recomputed only when `years` array changes
+let _monthSpansCache = null;
+let _monthSpansCacheKey = "";
+
+// Cache for day-column metadata (days mode) — recomputed only when years change
+let _dayColMetaCache = null;
+let _dayColMetaCacheKey = "";
+
+// Cache for sticky header heights — recomputed only when zoomMode changes
+let _cachedHeaderHeights = null;
+let _cachedHeaderZoom = null;
+
+// Shared empty Map sentinel — avoids allocating a new Map() on every cache miss
+const _emptyMap = new Map();
+
+function getDisplayItems() {
+  const rawList = [];
+
+  // Build children map for O(1) child lookups inside this function
+  const _childMap = new Map();
+  items.forEach((it) => {
+    const pid = it.parentId;
+    if (!_childMap.has(pid)) _childMap.set(pid, []);
+    _childMap.get(pid).push(it);
+  });
+  const _getChildren = (pid) => _childMap.get(pid) || [];
+
+  function isFilteredOut(item) {
+    if (filters.name.length > 0) {
+      if (
+        filters.name.includes((item.name || "").trim()) ||
+        filters.name.includes(item.name)
+      )
+        return true;
+    }
+    if (filters.type.length > 0) {
+      if (filters.type.includes(item.type)) return true;
+    }
+    return false;
+  }
+
+  function addChildren(parentId, level) {
+    const children = _getChildren(parentId).slice(); // copy before sort to avoid mutating the map
+    children.sort((a, b) => {
+      if (a.type === "milestone" && b.type !== "milestone") return -1;
+      if (b.type === "milestone" && a.type !== "milestone") return 1;
+      return 0;
+    });
+    children.forEach((child) => {
+      if (isFilteredOut(child)) return;
+      child.level = level;
+      rawList.push(child);
+      if (child.isExpanded !== false) {
+        addChildren(child.id, level + 1);
+      }
+    });
+  }
+
+  const topLevelItems = items.filter((i) => !i.parentId);
+  topLevelItems.forEach((p) => {
+    if (isFilteredOut(p)) return;
+    p.level = 0;
+    rawList.push(p);
+    if (p.isExpanded !== false) {
+      addChildren(p.id, 1);
+    }
+  });
+
+  return rawList;
+}
+
+/**
+ * Given an activity's startWeek (1-based, can be fractional for days mode) and
+ * its stored duration in weeks, return the effective VISUAL duration in weeks
+ * by counting forward calendar working-days and skipping any holidays.
+ * Safe: calendarDays always increases, so no infinite loop is possible.
+ */
+function computeEffectiveDuration(startWeek, duration, itemAssignees) {
+  // Only count holidays that apply to this item's assignees
+  const applicableHolidays = holidays.filter(h => holidayApplies(h, itemAssignees || []));
+  if (!applicableHolidays.length || duration <= 0) return duration;
+  const workDaysNeeded = Math.round(duration * 5);
+  if (workDaysNeeded === 0) return duration;
+
+  // Resolve fractional startWeek to absolute week + day index
+  const startW = Math.floor(startWeek);
+  const startDayFract = Math.round((startWeek - startW) * 5); // 0=Mon
+
+  const yearIndex = Math.floor((startW - 1) / 52);
+  const yearNum = parseInt(years[yearIndex]) || new Date().getFullYear();
+  const relWeek = ((startW - 1) % 52) + 1;
+  const jan4 = new Date(yearNum, 0, 4);
+  const weekStart = new Date(jan4.getTime());
+  weekStart.setDate(jan4.getDate() - (jan4.getDay() || 7) + 1); // Mon of ISO wk1
+
+  // Date of the first day of this block
+  const blockStart = new Date(weekStart.getTime());
+  blockStart.setDate(
+    weekStart.getDate() + (relWeek - 1) * 7 + startDayFract,
+  );
+
+  let workDone = 0;
+  let holidaysHit = 0;
+  let calDays = 0;
+  const maxCalDays = workDaysNeeded + applicableHolidays.length + 30; // safety cap
+  const applicableHolidayDates = new Set(applicableHolidays.map(h => h.date));
+
+  while (workDone < workDaysNeeded && calDays < maxCalDays) {
+    const cur = new Date(blockStart.getTime());
+    cur.setDate(blockStart.getDate() + calDays);
+    const dow = cur.getDay(); // 0=Sun, 6=Sat
+    if (dow !== 0 && dow !== 6) {
+      if (!applicableHolidayDates.has(formatDateStr(cur))) {
+        workDone++;
+      } else {
+        holidaysHit++;
+      }
+    }
+    calDays++;
+  }
+
+  // Each holiday in the span adds exactly 1 working-day slot (1/5 week)
+  return (workDaysNeeded + holidaysHit) / 5;
+}
+

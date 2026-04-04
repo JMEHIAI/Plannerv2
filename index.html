@@ -1,0 +1,1095 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>H-Customer Performance Planner</title>
+  <link rel="stylesheet" href="src/css/style.css" />
+</head>
+
+<body>
+  <div class="header-area" style="display: flex; align-items: center; gap: 24px; flex-wrap: wrap">
+    <img
+      src="src/img/logo.jpg"
+      height="70" style="display: block" alt="HORSE logo" />
+    <div>
+      <h1 style="margin-bottom: 4px">H-Customer Performance Planner</h1>
+      <p class="subtitle" style="margin-top: 0">
+        Standalone offline planner. Drag bars to reschedule. Save to CSV for
+        Excel.
+      </p>
+    </div>
+    <div style="flex-grow: 1"></div>
+
+    <button id="toggle-toolbars-btn" onclick="toggleToolbars()" class="outline" style="
+          padding: 8px 16px;
+          border-radius: 6px;
+          border: 1px solid #cbd5e1;
+          background: white;
+          cursor: pointer;
+          font-weight: 600;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          transition: all 0.2s;
+        ">
+      <span id="toggle-toolbars-icon">&#x1f441;&#xfe0f;</span>
+      <span id="toggle-toolbars-text">Hide Buttons</span>
+    </button>
+
+    <button class="outline" onclick="toggleManual()" style="
+          font-size: 14px;
+          padding: 8px 20px;
+          border-radius: 8px;
+          transition: all 0.2s;
+          white-space: nowrap;
+        " onmouseover="this.style.background = '#f1f5f9'" onmouseout="this.style.background = 'white'">
+      &#x1f4d6; How to use Planner
+    </button>
+  </div>
+
+  <!-- Auto-save restore banner (shown when saved data is found on startup) -->
+  <div id="autosave-restore-banner" style="
+      display: none;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 20px;
+      background: #fffbeb;
+      border-bottom: 1px solid #fcd34d;
+      font-size: 13px;
+      color: #92400e;
+    ">
+  </div>
+
+  <div id="toolbars-wrapper">
+    <div class="toolbar">
+      <input type="file" id="importFile" accept=".csv" style="display: none" onchange="importCSV(event)" />
+      <input type="file" id="mergeFile" accept=".csv" style="display: none" onchange="mergeCSV(event)" />
+
+      <!-- UNDO -->
+      <button id="undo-btn" class="outline" onclick="undo()" disabled title="Undo last action (Ctrl+Z)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 7v6h6"/><path d="M3 13a9 9 0 1 0 2.6-6.36L3 9"/>
+        </svg>
+        Undo
+      </button>
+
+      <div style="width: 1px; height: 24px; background: #cbd5e1; margin: 0 4px"></div>
+
+      <!-- VIEW GROUP -->
+      <button id="show-links-btn" class="outline" onclick="toggleShowLinks()" title="Show or hide all dependency link lines">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+        </svg>
+        <span id="links-label">Links: On</span>
+      </button>
+
+      <button class="outline" onclick="toggleComments()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+        </svg>
+        Comments
+      </button>
+
+      <button id="zoom-toggle-btn" class="outline" onclick="toggleZoom()" title="Toggle Days/Weeks/Months Zoom">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+        </svg>
+        <span id="zoom-label">Zoom: Weeks</span>
+      </button>
+
+      <div style="width: 1px; height: 24px; background: #cbd5e1; margin: 0 4px"></div>
+
+      <!-- YEAR RANGE GROUP -->
+      <div style="display:flex; align-items:center; gap:2px; border:1px solid #e2e8f0; border-radius:8px; padding:3px; background:#f8fafc;" title="Adjust visible year range">
+        <button class="outline" onclick="prependYear()" id="prepend-year-btn" title="Add one year before" style="padding:5px 9px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M19 12H5"/><path d="M12 5l-7 7 7 7"/>
+          </svg>
+          <span style="font-size:12px; font-weight:600; line-height:1;">+</span>
+        </button>
+        <button class="outline" onclick="removeYear()" id="remove-year-btn" title="Remove last year" style="padding:5px 9px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+            <path d="M5 12h14"/>
+          </svg>
+        </button>
+        <span id="year-count-label" style="font-size:13px; color:#475569; font-weight:500; padding:0 6px; white-space:nowrap; user-select:none;">3 yrs</span>
+        <button class="outline" onclick="addYear()" id="add-year-btn" title="Add one more year" style="padding:5px 9px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+            <path d="M12 5v14M5 12h14"/>
+          </svg>
+        </button>
+      </div>
+
+      <div style="flex-grow: 1"></div>
+
+      <!-- AUTO-SAVE -->
+      <button id="autosave-btn" class="outline" onclick="toggleAutoSave()" title="Pick a shared CSV file — planner auto-saves to it every 30s. All users load the same file.">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+          <polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>
+        </svg>
+        <span id="autosave-label">Auto-save: OFF</span>
+      </button>
+      <span id="autosave-status" style="font-size:11px; color:#64748b; white-space:nowrap; min-width:60px; flex-shrink:0;"></span>
+
+      <div style="width: 1px; height: 24px; background: #cbd5e1; margin: 0 4px; flex-shrink:0;"></div>
+
+      <!-- SAVE GROUP -->
+      <button class="outline" onclick="document.getElementById('importFile').click()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+        </svg>
+        Load CSV
+      </button>
+      <button class="outline" onclick="document.getElementById('mergeFile').click()" title="Append rows from another CSV below the current plan">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M8 17H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v5"/>
+          <path d="M12 18v4m0 0-2-2m2 2 2-2"/>
+          <rect x="12" y="12" width="10" height="10" rx="1"/>
+        </svg>
+        Merge CSV
+      </button>
+      <button id="global-lock-btn" onclick="toggleGlobalLock()" title="Lock or unlock all items" class="outline">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+          <path d="M7 11V7a5 5 0 0 1 9.9-1"/>
+        </svg>
+        <span id="lock-label">Lock: OFF</span>
+      </button>
+      <button class="success" onclick="exportCSV()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+          <polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>
+        </svg>
+        Save CSV
+      </button>
+      <button class="outline" onclick="exportJPEG()" title="Print or export as PDF">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
+          <rect x="6" y="14" width="12" height="8"/>
+        </svg>
+        Print / PDF
+      </button>
+    </div>
+
+    <!-- ADD TOOLBAR ROW -->
+    <div class="toolbar">
+      <button class="outline" onclick="addFamily()" style="color: #6366f1; font-weight: 600">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round">
+          <rect x="10" y="2" width="4" height="4" rx="1" />
+          <rect x="2" y="18" width="4" height="4" rx="1" />
+          <rect x="10" y="18" width="4" height="4" rx="1" />
+          <rect x="18" y="18" width="4" height="4" rx="1" />
+          <path d="M12 6v5M12 11H4v7M12 11h8v7" />
+        </svg>
+        Add Family
+      </button>
+      <button class="outline" onclick="addProject()" style="color: #10b981; font-weight: 600">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+        </svg>
+        Add Project
+      </button>
+      <button class="outline" onclick="addMilestone()" style="color: #f59e0b; font-weight: 600">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 2l10 10-10 10L2 12z" />
+        </svg>
+        Add Milestone
+      </button>
+      <button class="outline" onclick="addTask()" style="color: #3b82f6; font-weight: 600">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 5v14M5 12h14" />
+        </svg>
+        Add Activity
+      </button>
+
+      <div style="width: 1px; height: 24px; background: #cbd5e1; margin: 0 8px"></div>
+
+      <button onclick="toggleTemplatesModal()" title="Manage Project Activity Templates" class="outline"
+        style="color: #475569; font-weight: 600">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path
+            d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z">
+          </path>
+        </svg>
+        Add Template
+      </button>
+      <button id="link-mode-btn" onclick="toggleLinkMode()" title="Enter link mode to draw dependencies between items"
+        class="outline" style="color: #475569; font-weight: 600">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+        </svg>
+        Add Links
+      </button>
+      <button onclick="toggleTeamModal()" title="Manage Team and Workloads" class="outline"
+        style="color: #475569; font-weight: 600">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round">
+          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+          <circle cx="9" cy="7" r="4"></circle>
+          <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+          <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+        </svg>
+        Add Team
+      </button>
+      <button onclick="toggleAlarmPanel()" title="Manage alarms and export to Outlook" class="outline"
+        style="color: #475569; font-weight: 600">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+        </svg>
+        Add Alarm
+      </button>
+      <button onclick="openHolidaysModal()" title="Manage Non-Working Days" class="outline"
+        style="color: #475569; font-weight: 600">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+          <line x1="16" y1="2" x2="16" y2="6"></line>
+          <line x1="8" y1="2" x2="8" y2="6"></line>
+          <line x1="3" y1="10" x2="21" y2="10"></line>
+        </svg>
+        Add Holiday
+      </button>
+    </div>
+  </div>
+
+  <div class="planner-container">
+    <div class="grid" id="grid"></div>
+  </div>
+
+  <!-- Team Management Modal -->
+  <div id="team-modal-overlay" onclick="if (event.target === this) toggleTeamModal();" style="
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(15, 23, 42, 0.6);
+        backdrop-filter: blur(4px);
+        z-index: 1000;
+        align-items: center;
+        justify-content: center;
+      ">
+    <div id="team-modal-content" style="
+          background: white;
+          width: 90%;
+          max-width: 600px;
+          max-height: 85vh;
+          border-radius: 12px;
+          box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+        ">
+      <div style="
+            padding: 16px 24px;
+            border-bottom: 1px solid #e2e8f0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #f8fafc;
+          ">
+        <h2 style="margin: 0; font-size: 20px; color: #0f172a">
+          &#x1f465; Team &amp; Workload
+        </h2>
+        <button onclick="toggleTeamModal()" style="
+              background: none;
+              border: none;
+              font-size: 28px;
+              cursor: pointer;
+              color: #64748b;
+              line-height: 1;
+              padding: 0;
+            ">
+          &times;
+        </button>
+      </div>
+
+      <div style="padding: 24px; overflow-y: auto; flex: 1">
+        <div style="margin-bottom: 20px">
+          <h3 style="
+                font-size: 14px;
+                margin-top: 0;
+                margin-bottom: 12px;
+                color: #475569;
+              ">
+            Add Team Member
+          </h3>
+          <div style="display: flex; gap: 8px">
+            <input type="text" id="new-person-name" placeholder="Name (e.g. Alice P.)" style="
+                  flex-grow: 1;
+                  padding: 8px;
+                  border: 1px solid #cbd5e1;
+                  border-radius: 4px;
+                  font-size: 14px;
+                " />
+            <button class="success" onclick="addPerson()" style="padding: 8px 16px">
+              Add
+            </button>
+          </div>
+        </div>
+
+        <div style="margin-bottom: 20px">
+          <h3 style="font-size: 14px; margin-bottom: 12px; color: #475569">
+            Current Team
+          </h3>
+          <div id="team-list" style="
+                border: 1px solid #e2e8f0;
+                border-radius: 4px;
+                max-height: 240px;
+                overflow-y: auto;
+              ">
+            <!-- Dynamically populated -->
+          </div>
+        </div>
+
+        <div id="workload-view" style="margin-top: 4px">
+          <!-- populated by renderWorkloadView() -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Activity Templates Modal -->
+  <div id="templates-modal-overlay" onclick="if (event.target === this) toggleTemplatesModal();" style="
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(15, 23, 42, 0.6);
+        backdrop-filter: blur(4px);
+        z-index: 1000;
+        align-items: center;
+        justify-content: center;
+      ">
+    <div id="templates-modal-content" style="
+          background: white;
+          width: 90%;
+          max-width: 1000px;
+          max-height: 85vh;
+          border-radius: 12px;
+          box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+        ">
+      <div style="
+            padding: 16px 24px;
+            border-bottom: 1px solid #e2e8f0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #f8fafc;
+          ">
+        <h2 style="margin: 0; font-size: 20px; color: #0f172a">
+          &#x2699;&#xfe0f; Activity Templates
+        </h2>
+        <button onclick="toggleTemplatesModal()" style="
+              background: none;
+              border: none;
+              font-size: 28px;
+              cursor: pointer;
+              color: #64748b;
+              line-height: 1;
+              padding: 0;
+            ">
+          &times;
+        </button>
+      </div>
+
+      <div style="
+            padding: 24px;
+            overflow-y: auto;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+          ">
+        <div style="display: flex; gap: 8px">
+          <input type="text" id="new-template-name" placeholder="Activity Name" style="
+                flex-grow: 1;
+                padding: 8px;
+                border: 1px solid #cbd5e1;
+                border-radius: 4px;
+                font-size: 14px;
+              " />
+          <input type="number" id="new-template-duration" placeholder="Days" value="10" min="0.1" step="0.1" style="
+                width: 70px;
+                padding: 8px;
+                border: 1px solid #cbd5e1;
+                border-radius: 4px;
+                font-size: 14px;
+              " title="Duration in days" />
+          <input type="color" id="new-template-color" value="#4f46e5" style="
+                width: 40px;
+                height: 36px;
+                padding: 0;
+                border: 1px solid #cbd5e1;
+                border-radius: 4px;
+                cursor: pointer;
+              " title="Default Color" />
+          <button class="success" onclick="addTemplate()" style="padding: 8px 16px">
+            Add
+          </button>
+        </div>
+
+        <div style="
+              display: grid;
+              grid-template-columns: 1fr 1fr;
+              gap: 20px;
+              flex: 1;
+              min-height: 500px;
+            ">
+          <!-- Left Col: Saved Templates -->
+          <div style="display: flex; flex-direction: column">
+            <div style="
+                  display: flex;
+                  justify-content: space-between;
+                  align-items: center;
+                  margin-bottom: 12px;
+                ">
+              <h3 style="font-size: 14px; margin: 0; color: #475569">
+                Saved Templates (Drag to Compose)
+              </h3>
+              <input type="text" id="template-search" placeholder="Search templates..." oninput="renderTemplatesList()"
+                style="
+                    padding: 4px 8px;
+                    border: 1px solid #cbd5e1;
+                    border-radius: 4px;
+                    font-size: 12px;
+                    width: 150px;
+                  " />
+            </div>
+            <div id="templates-list" style="
+                  border: 1px solid #e2e8f0;
+                  border-radius: 4px;
+                  flex: 1;
+                  overflow-y: auto;
+                  background: #f8fafc;
+                ">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
+
+          <!-- Right Col: Composer -->
+          <div style="
+                display: flex;
+                flex-direction: column;
+                border: 2px dashed #cbd5e1;
+                border-radius: 8px;
+                background: #fafafa;
+                padding: 12px;
+              " ondragover="allowComposeDrop(event)" ondrop="handleComposeDrop(event)">
+            <h3 style="
+                  font-size: 14px;
+                  margin-top: 0;
+                  margin-bottom: 12px;
+                  color: #475569;
+                ">
+              Template Composer
+            </h3>
+            <div id="composer-list" style="
+                  flex: 1;
+                  overflow-y: auto;
+                  display: flex;
+                  flex-direction: column;
+                  gap: 8px;
+                  margin-bottom: 12px;
+                ">
+              <!-- Populated when dropped -->
+              <div style="
+                    color: #94a3b8;
+                    font-size: 13px;
+                    text-align: center;
+                    margin-top: 40px;
+                    font-style: italic;
+                  ">
+                Drag &amp; drop saved templates here
+              </div>
+            </div>
+            <div style="border-top: 1px solid #e2e8f0; padding-top: 12px">
+              <div style="
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    margin-bottom: 8px;
+                  ">
+                <span style="font-size: 13px; font-weight: bold; color: #334155">Total Duration:</span>
+                <span id="composer-total-duration" style="font-size: 14px; font-weight: bold; color: #10b981">0
+                  days</span>
+              </div>
+              <div style="display: flex; gap: 8px">
+                <input type="text" id="composer-master-name" placeholder="Master Template Name" style="
+                      flex: 1;
+                      padding: 8px;
+                      border: 1px solid #cbd5e1;
+                      border-radius: 4px;
+                      font-size: 14px;
+                    " />
+                <button id="composer-save-new-btn" class="outline" onclick="saveAsNewMasterTemplate()"
+                  style="padding: 8px 16px; display: none">
+                  Save as New
+                </button>
+                <button id="composer-save-btn" class="success" onclick="saveMasterTemplate()" style="padding: 8px 16px">
+                  Save Master
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Holidays Modal -->
+  <div id="holidaysModal" style="
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 1000;
+        align-items: center;
+        justify-content: center;
+      ">
+    <div style="
+          background: white;
+          border-radius: 8px;
+          padding: 24px;
+          width: 480px;
+          max-height: 80vh;
+          overflow-y: auto;
+          box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+        ">
+      <div style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+          ">
+        <h2 style="margin: 0; font-size: 18px; color: #1e293b">
+          &#x1f334; Manage Holidays
+        </h2>
+        <button onclick="closeHolidaysModal()" style="
+              background: none;
+              border: none;
+              font-size: 20px;
+              cursor: pointer;
+              color: #64748b;
+            ">
+          &times;
+        </button>
+      </div>
+
+      <!-- Single date -->
+      <p style="
+            font-size: 12px;
+            font-weight: 600;
+            color: #64748b;
+            margin: 0 0 6px;
+          ">
+        Add single day
+      </p>
+      <div style="display: flex; gap: 8px; margin-bottom: 16px">
+        <input type="date" id="newHolidayDate" style="
+              flex-grow: 1;
+              padding: 8px;
+              border: 1px solid #cbd5e1;
+              border-radius: 4px;
+            " />
+        <button onclick="addHoliday()" style="
+              padding: 8px 16px;
+              background: #4f46e5;
+              color: white;
+              border: none;
+              border-radius: 4px;
+              cursor: pointer;
+            ">
+          Add
+        </button>
+      </div>
+
+      <!-- Date range -->
+      <p style="
+            font-size: 12px;
+            font-weight: 600;
+            color: #64748b;
+            margin: 0 0 6px;
+          ">
+        Add date range
+      </p>
+      <div style="
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+          ">
+        <input type="date" id="holidayRangeFrom" style="
+              flex: 1;
+              min-width: 130px;
+              padding: 8px;
+              border: 1px solid #cbd5e1;
+              border-radius: 4px;
+            " />
+        <span style="font-size: 13px; color: #64748b">to</span>
+        <input type="date" id="holidayRangeTo" style="
+              flex: 1;
+              min-width: 130px;
+              padding: 8px;
+              border: 1px solid #cbd5e1;
+              border-radius: 4px;
+            " />
+        <button onclick="addHolidayRange()" style="
+              padding: 8px 16px;
+              background: #10b981;
+              color: white;
+              border: none;
+              border-radius: 4px;
+              cursor: pointer;
+            ">
+          Add Range
+        </button>
+      </div>
+
+      <p style="
+            font-size: 12px;
+            font-weight: 600;
+            color: #64748b;
+            margin: 0 0 8px;
+          ">
+        Current holidays
+        <span id="holidays-count" style="color: #94a3b8"></span>
+      </p>
+      <div id="holidaysList" style="display: flex; flex-direction: column; gap: 6px"></div>
+    </div>
+  </div>
+
+  <!-- Alarm Panel -->
+  <div id="alarm-panel">
+    <div style="
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 16px;
+        ">
+      <span style="font-size: 16px; font-weight: 700">&#x1f514; Alarms</span>
+      <button onclick="toggleAlarmPanel()" style="
+            background: none;
+            border: none;
+            font-size: 22px;
+            cursor: pointer;
+            color: #64748b;
+            line-height: 1;
+          ">
+        &times;
+      </button>
+    </div>
+    <div style="display: grid; gap: 8px; margin-bottom: 16px">
+      <input id="alarm-title" class="alarm-field" type="text" placeholder="Meeting / alarm title&hellip;" />
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px">
+        <div>
+          <label style="font-size: 11px; color: #64748b">Date
+            <span id="alarm-date-week" style="color: #f59e0b; font-weight: 600; margin-left: 4px"></span></label>
+          <input id="alarm-date" class="alarm-field" type="date" onchange="updateAlarmDateWeek()" />
+        </div>
+        <div>
+          <label style="font-size: 11px; color: #64748b">Time</label>
+          <input id="alarm-time" class="alarm-field" type="time" value="09:00" />
+        </div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px">
+        <label style="font-size: 12px; color: #64748b; white-space: nowrap">Duration (min):</label>
+        <input id="alarm-duration" class="alarm-field" type="number" value="60" min="15" step="15"
+          style="width: 70px" />
+      </div>
+      <button class="success" onclick="addAlarm()" style="width: 100%">
+        + Add Alarm
+      </button>
+    </div>
+    <div id="alarm-list"></div>
+    <button class="outline" onclick="exportICS()" style="width: 100%; margin-top: 10px; justify-content: center">
+      &#x1f4c5; Export to Outlook (.ics)
+    </button>
+  </div>
+
+  <!-- Manual Modal -->
+  <div id="manual-overlay" onclick="if (event.target === this) toggleManual();">
+    <div id="manual-content">
+      <div class="manual-header">
+        <h2>&#x1f4d6; How to use Planner</h2>
+        <button class="manual-close-btn" onclick="toggleManual()">
+          &times;
+        </button>
+      </div>
+      <div class="manual-body">
+        <h3>1. The Navigation &amp; Layout</h3>
+        <ul>
+          <li>
+            <strong>Scroll horizontally</strong> inside the planner to view
+            more weeks. Holding <kbd>Shift</kbd> while scrolling with a mouse
+            wheel will scroll sideways.
+          </li>
+          <li>
+            <strong>Toggle Zoom (Weeks / Days / Months):</strong> Click the
+            <kbd>&#x1f50d; Zoom: Weeks</kbd> button in the top toolbar to cycle
+            between three zoom levels &mdash; full <strong>Weeks</strong> (default),
+            granular <strong>Days</strong> (Mon&ndash;Fri columns), and wide
+            <strong>Months</strong> overview. Note: 5 days =
+            <code>1.0</code> week in duration.
+          </li>
+          <li>
+            <strong>Adjust Columns:</strong> Hover your mouse over the
+            vertical border line separating the left-side text columns from
+            the grid. You can drag these borders left or right from *anywhere*
+            vertically along the column!
+          </li>
+          <li>
+            <strong>Toggle Comments:</strong> Click
+            <kbd>Toggle Comments</kbd> to hide/show the comments section to
+            save horizontal space.
+          </li>
+          <li>
+            <strong>Highlight a Week / Today Marker:</strong> Click any
+            <strong>week or day column header</strong> in the timeline grid to
+            highlight that entire column in a distinct color &mdash; useful for
+            marking today or a key deadline. Click the same header again to
+            remove the highlight. The highlighted week is saved with your CSV.
+          </li>
+        </ul>
+
+        <h3>2. Structure &amp; Hierarchy</h3>
+        <ul>
+          <li>
+            <strong>Families -&gt; Projects -&gt; Activities &amp; Milestones:</strong>
+            This planner supports deep nesting.
+          </li>
+          <li>
+            <strong>Add Family:</strong> Click the
+            <kbd>&#x1f465; Add Family</kbd> button in the top toolbar. It instantly
+            creates a full Parent Family group populated with predefined
+            Brother/Child Projects.
+          </li>
+          <li>
+            <strong>Add Sub-Items:</strong> Look at the gray buttons next to a
+            row's name. Use <kbd>+P</kbd> (Add Project), <kbd>+M</kbd> (Add
+            Milestone), or <kbd>+A</kbd> (Add Activity) to nest items *inside*
+            that specific row.
+          </li>
+          <li>
+            <strong>Custom Activity Templates:</strong> Click
+            <kbd>&#x2699;&#xfe0f; Activity Template</kbd> to define reusable tasks (name,
+            duration, color). When adding a new activity in the grid, you can
+            select these templates from the dropdown to instantly apply your
+            predefined settings.
+          </li>
+          <li>
+            <strong>Collapse/Expand:</strong> Click the small triangle (<kbd>&#x25bc;</kbd>
+            / <kbd>&#x25b6;</kbd>) next to a parent item to hide or show its
+            children. *Note: When collapsed, any milestones within that parent
+            are automatically condensed and shown on the parent's row!*
+          </li>
+        </ul>
+
+        <h3>3. Modifying Items</h3>
+        <ul>
+          <li>
+            <strong>Rename:</strong> Click on any text in the blue/gray column
+            to edit it directly. Projects, Milestones, and newly created
+            Activities open smart dropdowns for selecting predefined
+            templates.
+          </li>
+          <li>
+            <strong>Assign Team:</strong> Click <kbd>&#x1f465; Assign Team</kbd> in
+            the top toolbar to add people to your roster. Back in the grid,
+            click the user icon (<kbd>&#x1f464;</kbd>) under any row's settings gear
+            to assign people. Their names will appear directly on the colored
+            timeline bars. You can check workload clashes in the Team modal.
+          </li>
+          <li>
+            <strong>Reorder &amp; Parent:</strong> Grab the vertical dot handles
+            (<kbd>&#x22ee;&#x22ee;</kbd>) on the far left of a row to drag and drop it above
+            or below other items.
+            <br>&bull; <i>Nest:</i> Hold <kbd>Alt</kbd> while dropping on a row to nest the item inside it.
+            <br>&bull; <i>Un-nest:</i> Hold <kbd>Ctrl</kbd> (or <kbd>Cmd</kbd>) while dropping to make the item a
+            top-level parent.
+            <br>&bull; <i>Move to End:</i> Scroll to the very bottom and drop on the placeholder row to move top-level.
+          </li>
+          <li>
+            <strong>Change Colors:</strong> Click the gear icon (<kbd>&#x2699;</kbd>)
+            in the header to reveal the row controls, then click the color
+            circle to paint the bar or diamond.
+          </li>
+          <li>
+            <strong>Duplicate:</strong> Click the green <kbd>D</kbd> button to
+            instantly clone a row. *Warning: Duplicating a parent will also
+            recursively clone ALL of its children!*
+          </li>
+          <li>
+            <strong>Delete:</strong> Click the red <kbd>&times;</kbd> button.
+            *Deleting a parent deletes everything inside it!*
+          </li>
+        </ul>
+
+        <h3>4. Timeline Constraints &amp; Locking</h3>
+        <ul>
+          <li>
+            <strong>Move Activities:</strong> Drag the center of a colored bar
+            to change its start date.
+          </li>
+          <li>
+            <strong>Resize Activities:</strong> Drag the darker right-edge
+            handle of an activity block to stretch its duration.
+          </li>
+          <li>
+            <strong>Completion % (Activities):</strong> Open the row settings
+            with the gear icon (<kbd>&#x2699;</kbd>), then type a number (0&ndash;100) in
+            the <kbd>%</kbd> field next to an Activity row. A semi-transparent
+            progress fill appears on the left side of the timeline bar,
+            showing how much of the work is done. This value is saved in CSV.
+          </li>
+          <li>
+            <strong>Move Milestones:</strong> Drag the diamond block itself.
+            Alternatively, use the <kbd>YYWW</kbd> text input box next to a
+            milestone's name to precisely jump it to a specific Year/Week
+            (e.g. `2648`).
+          </li>
+          <li>
+            <strong>Row Sharing (Milestones):</strong> Use the small
+            <kbd>&#x25b2;</kbd> / <kbd>&#x25bc;</kbd> buttons next to a Milestone to change
+            its "Row Layer". Assigning two milestones to the same layer makes
+            them render side-by-side on the same horizontal track!
+          </li>
+          <li>
+            <strong>The Lock Button (&#x1f512;):</strong> Clicking the Lock button
+            will lock that item's time constraints. Crucially,
+            <strong>locking a row automatically locks everything visually
+              underneath it</strong>. Dragging that locked anchor will physically push/pull *every*
+            locked item below it forward or backward in time!
+          </li>
+          <li>
+            <strong>Isolating a Lock:</strong> Hold the <kbd>CTRL</kbd> key
+            while clicking a lock button to explicitly lock or unlock ONLY
+            that item, independently of its children. Dragging a locked parent
+            will *skip* and leave behind any manually unlocked descendants!
+          </li>
+        </ul>
+
+        <h3>5. Filtering Data</h3>
+        <ul>
+          <li>
+            <strong>Filter by Name:</strong> Click the <kbd>&#x25bc;</kbd> icon next
+            to the "Project" column header. Uncheck names to dynamically hide
+            matching rows.
+          </li>
+          <li>
+            <strong>Filter by Type:</strong> Click the clipboard
+            (<kbd>&#x1f4cb;</kbd>) icon to filter strictly by Families, Projects,
+            Tasks, or Milestones.
+          </li>
+        </ul>
+
+        <h3>6. Add comments</h3>
+        <ul>
+          <li>
+            <strong>Add/Toggle Comment:</strong> Hold <kbd>CTRL</kbd> and
+            <strong>Click</strong> on any colored bar or milestone diamond in
+            the grid to open a sticky comment popup.
+          </li>
+          <li>
+            <strong>Orange Indicators:</strong> Any block with a comment will
+            show a small <strong>orange (amber) dot</strong> in its corner,
+            letting you know at a glance where notes are located.
+          </li>
+          <li>
+            <strong>The Connector:</strong> A dynamic "staring line" (tail)
+            always points from the comment box to the center of its block, no
+            matter how far you drag the popup.
+          </li>
+          <li>
+            <strong>Interact:</strong> You can <strong>drag</strong> the gray
+            header area of a comment to move it, and use the
+            <strong>bottom-right handle</strong> to resize it.
+          </li>
+          <li>
+            <strong>Delete:</strong> Click the trash icon (<kbd>&#x1f5d1;&#xfe0f;</kbd>) in
+            the comment header to permanently delete the comment.
+          </li>
+          <li>
+            <strong>Persistence:</strong> Block comments are automatically
+            saved and restored when you export/import CSV files.
+          </li>
+        </ul>
+
+        <h3>7. Dependency Links</h3>
+        <ul>
+          <li>
+            <strong>Enter Link Mode:</strong> Click the <kbd>&#x1f517; Link</kbd>
+            button in the toolbar. Blue anchor dots appear on every bar and
+            milestone diamond &mdash; one on each end.
+          </li>
+          <li>
+            <strong>Draw a Link:</strong> In Link Mode, click the source
+            anchor dot (start or end of a bar), then click the target anchor
+            dot on another bar. A dashed bezier wire is drawn between them.
+          </li>
+          <li>
+            <strong>Exit Link Mode:</strong> Click the <kbd>&#x1f517; Link</kbd>
+            button again to turn off the mode. Existing wires remain visible.
+          </li>
+          <li>
+            <strong>Delete a Link:</strong> Hover over a wire to reveal the
+            red <kbd>&#x2715;</kbd> button at its midpoint, then click it.
+          </li>
+          <li>
+            <strong>Toggle Wire Visibility:</strong> Click
+            <kbd>&#x1f441; Links: On/Off</kbd> in the toolbar to show or hide all
+            dependency wires without deleting them. The visibility state is
+            saved in your CSV.
+          </li>
+          <li>
+            <strong>Auto-propagation:</strong> When you drag an item that has
+            outgoing links, all linked items are automatically shifted by the
+            same number of weeks, keeping the dependency chain intact.
+          </li>
+        </ul>
+
+        <h3>8. Advanced Utilities &amp; Alarms</h3>
+        <ul>
+          <li>
+            <strong>Holidays:</strong> Click the <kbd>Add Holiday</kbd> button
+            in the toolbar to open the Holiday Manager. Add individual dates
+            (YYYY-MM-DD) or date ranges. Holiday columns are shaded gray in
+            the grid, and task durations automatically skip over them so
+            working-day counts stay accurate. Holidays are saved in your CSV.
+          </li>
+          <li>
+            <strong>&#x1f514; Alarms:</strong> Click the Alarms button to open the
+            sidebar. You can set date/time reminders tied to specific rows (by
+            double-clicking a grid cell). Click
+            <kbd>&#x1f4c5; Export to Outlook (.ics)</kbd> to download them as
+            calendar invites.
+          </li>
+          <li>
+            <strong>Export JPEG:</strong> Takes a clean visual snapshot image
+            of your current screen view.
+          </li>
+          <li>
+            <strong>Save to CSV:</strong> Backs up your entire planner into a
+            standard spreadsheet file. This perfectly preserves your
+            hierarchy, colors, column widths, active filters, custom alarms,
+            dependency links, team assignments, completion percentages,
+            holidays, and the current zoom level.
+          </li>
+          <li>
+            <strong>Load CSV:</strong> Overwrites your current session with a
+            saved file.
+          </li>
+          <li>
+            <strong>Merge CSV:</strong> Loads a selected CSV and carefully
+            appends its items to the bottom of your current planner
+            seamlessly.
+          </li>
+        </ul>
+
+        <h3>9. Activity &amp; Master Templates</h3>
+        <ul>
+          <li>
+            <strong>Create Standard Templates:</strong> Click
+            <kbd>&#x2699;&#xfe0f; Activity Template</kbd> to open the modal. Here you can
+            define common activities by Name, Duration (Days), and Color. You
+            can even use decimals like `0.5` days to represent 4-hour slots!
+          </li>
+          <li>
+            <strong>Create Master Templates:</strong> The Template Modal
+            allows you to drag-and-drop your basic templates into the
+            right-side <strong>Composer</strong>. This lets you string
+            together sequential steps (e.g., *Design -&gt; Review -&gt; Build*).
+            When you save this Master Template, deploying it onto your planner
+            automatically generates the parent row and all of its sequential
+            sub-activities in one click!
+          </li>
+          <li>
+            <strong>Edit &amp; Fork Masters:</strong> Click any Master Template in
+            your saved list to load its setup back into the Composer. You can
+            adjust the quantities, add new steps, or change colors. Click
+            <kbd>Update Master</kbd> to overwrite it, or click
+            <kbd>Save as New</kbd> to fork it into a brand new standalone
+            Master Template!
+          </li>
+        </ul>
+
+        <div style="
+              text-align: center;
+              margin-top: 40px;
+              margin-bottom: 20px;
+              font-style: italic;
+              color: #64748b;
+            ">
+          Made by Ionut Prunes
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Link mode banner (bottom of screen when linking is active) -->
+  <div id="link-mode-banner"></div>
+
+  <!-- CSV Save As modal (fallback for browsers without showSaveFilePicker) -->
+  <div id="_csvSaveModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:2000;align-items:center;justify-content:center;">
+    <div style="background:white;border-radius:8px;padding:24px;width:380px;box-shadow:0 10px 15px -3px rgba(0,0,0,0.15);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h2 style="margin:0;font-size:17px;color:#1e293b;">&#x1f4be; Save CSV As</h2>
+        <button onclick="document.getElementById('_csvSaveModal').style.display='none'" style="background:none;border:none;font-size:20px;cursor:pointer;color:#64748b;">&times;</button>
+      </div>
+      <p style="font-size:12px;color:#64748b;margin:0 0 8px;">File name (without extension):</p>
+      <input id="_csvFilenameInput" type="text" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:14px;margin-bottom:16px;"
+        onkeydown="if(event.key==='Enter') _confirmCsvSave(); if(event.key==='Escape') document.getElementById('_csvSaveModal').style.display='none';" />
+      <div style="display:flex;justify-content:flex-end;gap:8px;">
+        <button onclick="document.getElementById('_csvSaveModal').style.display='none'" style="padding:8px 16px;border:1px solid #cbd5e1;border-radius:6px;background:white;cursor:pointer;font-size:13px;">Cancel</button>
+        <button onclick="_confirmCsvSave()" style="padding:8px 16px;background:#10b981;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- JS Modules (load order matters: state first, ui last) -->
+  <script src="src/js/state.js"></script>
+  <script src="src/js/render.js"></script>
+  <script src="src/js/interactions.js"></script>
+  <script src="src/js/items.js"></script>
+  <script src="src/js/holidays.js"></script>
+  <script src="src/js/links.js"></script>
+  <script src="src/js/alarms.js"></script>
+  <script src="src/js/csv.js"></script>
+  <script src="src/js/ui.js"></script>
+  <script src="src/js/autosave.js"></script>
+  <script>
+    render();
+    initAutoSave(); // check for saved data and start timer if previously enabled
+    // Ctrl+Z / Cmd+Z → undo
+    document.addEventListener("keydown", function(e) {
+      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
+        const active = document.activeElement;
+        // Don't intercept Ctrl+Z while typing in a text input or textarea
+        if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) return;
+        e.preventDefault();
+        undo();
+      }
+    });
+  </script>
+</body>
+
+</html>
