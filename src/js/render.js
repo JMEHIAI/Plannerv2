@@ -245,7 +245,9 @@ function render() {
       function traverse(pid) {
         (childrenMap.get(pid) || []).forEach(k => {
           if (k.startWeek < minS) minS = k.startWeek;
-          const kEnd = k.startWeek + (k.duration || 0);
+          // Milestones have duration 0 — extend by half a week so the parent block ends at the diamond center
+          const kDur = (k.type === "milestone" && (k.duration || 0) === 0) ? 0.5 : (k.duration || 0);
+          const kEnd = k.startWeek + kDur;
           if (kEnd > maxE) maxE = kEnd;
           traverse(k.id);
         });
@@ -277,14 +279,7 @@ function render() {
       ? '<div class="comment-indicator"></div>'
       : "";
 
-  const fmtMsDate = (sw) => {
-    const yi = Math.max(0, Math.min(years.length - 1, Math.floor((sw - 1) / 52)));
-    const yy = String(parseInt(years[yi]) || new Date().getFullYear()).slice(-2);
-    const wiy = ((sw - 1) % 52) + 1;
-    const ww = String(Math.floor(wiy)).padStart(2, "0");
-    const frac = wiy - Math.floor(wiy);
-    return yy + ww + (frac > 0.05 ? "." + Math.round(frac * 10) : "");
-  };
+  const fmtMsDate = (sw) => formatYYWWD(sw);
 
   // Clear all dynamic SVG tails from previous render
   const svg = document.getElementById("comment-tail-svg-container");
@@ -687,9 +682,11 @@ function render() {
         const kids = getChildren(parentId);
         kids.forEach((k) => {
           if (k.startWeek < minStart) minStart = k.startWeek;
-          const kDur = k.type === "task" && holidays.length > 0
+          let kDur = k.type === "task" && holidays.length > 0
             ? computeEffectiveDuration(k.startWeek, k.duration || 0, k.assignees || [])
             : k.duration || 0;
+          // Milestones have duration 0 — extend by half a week so the parent block ends at the diamond center
+          if (k.type === "milestone" && kDur === 0) kDur = 0.5;
           const end = k.startWeek + kDur;
           if (end > maxEnd) maxEnd = end;
           traverse(k.id);
@@ -758,7 +755,7 @@ function render() {
         html += '<input class="name-input" type="text" value="' + item.name.replace(/"/g, "&quot;") + '" onchange="updateName(' + item.id + ', this.value)" placeholder="Milestone name...">';
       }
       const weekDisplay = formatYYWWD(item.startWeek);
-      html += '<input type="text" maxlength="6" value="' + weekDisplay + '" onchange="setMilestoneWeek(' + item.id + ', this.value)" title="Type YYWW or YYWW.D" style="width:52px;border:1px solid #cbd5e1;border-radius:4px;padding:2px 4px;font-size:11px;font-family:monospace;color:#92400e;background:#fffbeb;text-align:center;flex-shrink:0;">';
+      html += '<input type="text" maxlength="6" value="' + weekDisplay + '" onchange="updateMilestoneDate(' + item.id + ', this.value)" title="Type YYWW or YYWW.D" style="width:52px;border:1px solid #cbd5e1;border-radius:4px;padding:2px 4px;font-size:11px;font-family:monospace;color:#92400e;background:#fffbeb;text-align:center;flex-shrink:0;">';
     } else {
       if ((item.name === "New Activity" || item.name === "New Sub-activity" || /^Activity \d+$/.test(item.name)) && customTemplates.length > 0) {
         html += '<select class="name-input" onchange="applyActivityTemplate(' + item.id + ', this.value)">';
@@ -801,8 +798,7 @@ function render() {
         html += '<div class="duration-wrapper"><input class="duration-input" type="number" min="0.04" max="500" step="' + displayStep + '" value="' + displayVal + '" ' +
           (hasChildren ? 'disabled title="Duration is computed from sub-items"' : 'onchange="updateDuration(' + item.id + ', this.value)" title="' + displayTitle + '"') + '>' + displayUnit + '</div>';
       } else if (item.type === "milestone") {
-        const displayDate = formatYYWWD(item.startWeek);
-        html += '<div class="duration-wrapper" title="Milestone Date (YYWW or YYWW.D)"><input class="milestone-date-input" type="text" value="' + displayDate + '" onchange="updateMilestoneDate(' + item.id + ', this.value)" style="text-transform: uppercase;" inputmode="decimal" spellcheck="false"></div>';
+        // date input already shown inline next to the name
       } else {
         html += '<div style="width: 74px"></div>';
       }
@@ -947,7 +943,9 @@ function render() {
       const _parentItem = items.find(i => i.id === item.parentId);
       const _parentIsMilestonesGroup = _parentItem && _parentItem.type === "milestones-group";
       if (!_parentIsMilestonesGroup) {
-        const msX = zoomMode === "months" ? _monthX(mapWeekToMonth(item.startWeek)) : _wkX(item.startWeek);
+        const msXRaw = zoomMode === "months" ? _monthX(mapWeekToMonth(item.startWeek)) : _wkX(item.startWeek);
+        const msEff = hiddenYears.has(Math.floor((Math.max(1, Math.floor(item.startWeek)) - 1) / 52)) ? collapsedCellW : cellW;
+        const msX = msXRaw + msEff / 2;
         const lineHeight = (totalRows - index + 1) * 48;
         const bgColor = item.color || "#f59e0b";
         let r = 245, g = 158, b = 11;
@@ -980,12 +978,14 @@ function render() {
           if (_mgLevel === 0 ? kLevel === 0 : kLevel < _mgLevel) break;
           _lastDescIdx = k;
         }
-        _tailHeight = (_lastDescIdx - index + 1) * 48;
+        _tailHeight = (_lastDescIdx - index) * 48 + 24;
       }
 
       const descMilestones = getDescendantMilestones(item.id);
       descMilestones.forEach((ms) => {
-        const msX = zoomMode === "months" ? _monthX(mapWeekToMonth(ms.startWeek)) : _wkX(ms.startWeek);
+        const msXRaw = zoomMode === "months" ? _monthX(mapWeekToMonth(ms.startWeek)) : _wkX(ms.startWeek);
+        const msEff = hiddenYears.has(Math.floor((Math.max(1, Math.floor(ms.startWeek)) - 1) / 52)) ? collapsedCellW : cellW;
+        const msX = msXRaw + msEff / 2;
         const msColor = ms.color || "#f59e0b";
         const msShortLabel = ms.name.replace(/\s*\(.*/, "").trim().toUpperCase();
         let _lineHtml = "";

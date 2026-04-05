@@ -237,8 +237,36 @@ function parseYYWWD(str) {
   if (yyww.length < 3) return null;
   const yy = yyww.substring(0, 2);
   const ww = parseInt(yyww.substring(2));
-  const yrIdx = years.findIndex((y) => y.endsWith(yy));
-  if (yrIdx === -1) return null;
+  if (ww < 1 || ww > 52) return null;
+
+  let yrIdx = years.findIndex((y) => y.endsWith(yy));
+
+  // Auto-create missing years if needed
+  if (yrIdx === -1) {
+    const century = parseInt(yy) >= 50 ? 1900 : 2000;
+    const targetYear = century + parseInt(yy);
+    const firstYear = parseInt(years[0]) || 2025;
+    const lastYear = parseInt(years[years.length - 1]) || 2028;
+
+    if (targetYear < firstYear) {
+      // Prepend years and shift all items
+      while (parseInt(years[0]) > targetYear) {
+        const fy = parseInt(years[0]);
+        years.unshift(String(fy - 1));
+        items.forEach(item => { item.startWeek += 52; });
+      }
+    } else if (targetYear > lastYear) {
+      // Append years
+      while (parseInt(years[years.length - 1]) < targetYear) {
+        const ly = parseInt(years[years.length - 1]);
+        years.push(String(ly + 1));
+      }
+    }
+    if (typeof _updateYearCountLabel === 'function') _updateYearCountLabel();
+    yrIdx = years.findIndex((y) => y.endsWith(yy));
+    if (yrIdx === -1) return null;
+  }
+
   const baseWeek = yrIdx * 52 + ww;
   const offset = (Math.max(1, Math.min(5, d)) - 1) * 0.2;
   return baseWeek + offset;

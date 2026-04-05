@@ -160,7 +160,7 @@ function _updateAutoSaveUI() {
     btn.style.color      = active ? '#10b981' : '';
     btn.style.fontWeight = active ? '700'     : '';
     btn.title = active
-      ? 'Click to change master CSV file. Right-click to clear.'
+      ? 'Click to turn off auto-save'
       : 'Click to set the shared master CSV file for auto-save';
   }
 
@@ -212,8 +212,8 @@ function dismissRestoreBanner() {
 
 function toggleAutoSave() {
   if (_masterFileHandle) {
-    // Already set — let them pick a different file
-    setMasterCSVFile();
+    // Already active — turn it off
+    clearMasterCSVFile();
   } else {
     setMasterCSVFile();
   }

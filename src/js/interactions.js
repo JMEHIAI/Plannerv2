@@ -179,10 +179,13 @@ function handleBlockClick(e, itemId) {
       if (!item.blockComment) {
         const gridEl = document.getElementById("grid");
         const gridRect = gridEl.getBoundingClientRect();
+        const scrollParent = gridEl.closest(".planner-container") || gridEl.parentElement;
+        const scrollX = scrollParent ? scrollParent.scrollLeft : 0;
+        const scrollY = scrollParent ? scrollParent.scrollTop : 0;
         item.blockComment = {
           text: "",
-          x: e.clientX - gridRect.left,
-          y: e.clientY - gridRect.top,
+          x: e.clientX - gridRect.left + scrollX,
+          y: e.clientY - gridRect.top + scrollY,
           width: 200,
           height: 150,
           isOpen: true,
@@ -402,11 +405,15 @@ function startCommentDrag(e, itemId) {
   if (!item) return;
 
   if (!item.blockComment) {
+    const gridEl = document.getElementById("grid");
     const gridRect = gridEl.getBoundingClientRect();
+    const scrollParent = gridEl.closest(".planner-container") || gridEl.parentElement;
+    const scrollX = scrollParent ? scrollParent.scrollLeft : 0;
+    const scrollY = scrollParent ? scrollParent.scrollTop : 0;
     item.blockComment = {
       text: "",
-      x: e.clientX - gridRect.left,
-      y: e.clientY - gridRect.top,
+      x: e.clientX - gridRect.left + scrollX,
+      y: e.clientY - gridRect.top + scrollY,
       width: 200,
       height: 150,
       isOpen: true,
@@ -521,6 +528,18 @@ function getCommentTailSVG() {
   return svg;
 }
 
+function _gridOffset(el) {
+  let x = 0, y = 0;
+  const grid = document.getElementById("grid");
+  let cur = el;
+  while (cur && cur !== grid) {
+    x += cur.offsetLeft;
+    y += cur.offsetTop;
+    cur = cur.offsetParent;
+  }
+  return { x, y };
+}
+
 function updatePopupPointer(item, el) {
   if (!item.blockComment) return;
   const blockEl = document.getElementById(`block-${item.id}`);
@@ -537,17 +556,14 @@ function updatePopupPointer(item, el) {
     svg.appendChild(path);
   }
 
-  const gridRect = document.getElementById("grid").getBoundingClientRect();
-  const bRect = blockEl.getBoundingClientRect();
-  const pRect = el.getBoundingClientRect();
+  const bOff = _gridOffset(blockEl);
+  const bMidX = bOff.x + blockEl.offsetWidth / 2;
+  const bMidY = bOff.y + blockEl.offsetHeight / 2;
 
-  const bMidX = bRect.left - gridRect.left + bRect.width / 2;
-  const bMidY = bRect.top - gridRect.top + bRect.height / 2;
-
-  const pX = pRect.left - gridRect.left;
-  const pY = pRect.top - gridRect.top;
-  const pW = pRect.width;
-  const pH = pRect.height;
+  const pX = el.offsetLeft;
+  const pY = el.offsetTop;
+  const pW = el.offsetWidth;
+  const pH = el.offsetHeight;
   const pMidX = pX + pW / 2;
   const pMidY = pY + pH / 2;
 

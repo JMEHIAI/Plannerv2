@@ -298,6 +298,16 @@ function updateProjectName(id, name) {
             color: "#4f46e5",
           });
         }
+
+        // Ensure enough years exist to fit all milestones and activities
+        const lastMsOffset = config.milestones.reduce((max, m) => Math.max(max, m.offset), 0);
+        const lastActEnd = startWeek + (config.activityCount - 1) * 2 + 2;
+        const maxWeekNeeded = Math.max(startWeek + lastMsOffset, lastActEnd);
+        while (years.length * 52 < maxWeekNeeded) {
+          const lastYr = parseInt(years[years.length - 1]) || 2025;
+          years.push(String(lastYr + 1));
+        }
+        _updateYearCountLabel();
       }
     }
     render();
