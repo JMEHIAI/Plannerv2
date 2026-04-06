@@ -105,13 +105,25 @@ function drawLinks() {
   if (old) old.remove();
   if (!showLinks || links.length === 0) return;
 
+  // CSS zoom on body scales content but BCR returns viewport (screen) coords.
+  // The fixed SVG is inside body and therefore also zoomed, so its coordinate
+  // system differs from viewport coords. Dividing BCR by zoom converts screen
+  // coords into the SVG's CSS-pixel space.
+  const zoom = parseFloat(getComputedStyle(document.body).zoom) || 1;
+
   // Get the planner bounds early so we can build a clipPath
   const plannerEl = gridEl.closest
     ? gridEl.closest(".planner-container")
     : gridEl.parentElement;
-  const clipRect = plannerEl ? plannerEl.getBoundingClientRect() : null;
+  const rawClip = plannerEl ? plannerEl.getBoundingClientRect() : null;
+  const clipRect = rawClip ? {
+    left: rawClip.left / zoom,
+    top: rawClip.top / zoom,
+    width: rawClip.width / zoom,
+    height: rawClip.height / zoom,
+  } : null;
 
-  // Fixed SVG covers the entire viewport — BCR coords work directly
+  // Fixed SVG covers the entire viewport — BCR coords (adjusted for zoom) work directly
   const svg = document.createElementNS(
     "http://www.w3.org/2000/svg",
     "svg",
@@ -189,11 +201,11 @@ function drawLinks() {
     const fr = fromBlock.getBoundingClientRect();
     const tr = toBlock.getBoundingClientRect();
 
-    // BCR values are already viewport coordinates — match fixed-SVG coords directly
-    const sx = link.fromAnchor === "start" ? fr.left : fr.right;
-    const sy = fr.top + fr.height / 2;
-    const tx = link.toAnchor === "start" ? tr.left : tr.right;
-    const ty = tr.top + tr.height / 2;
+    // Convert viewport (screen) coords to the SVG's CSS-pixel space
+    const sx = (link.fromAnchor === "start" ? fr.left : fr.right) / zoom;
+    const sy = (fr.top + fr.height / 2) / zoom;
+    const tx = (link.toAnchor === "start" ? tr.left : tr.right) / zoom;
+    const ty = (tr.top + tr.height / 2) / zoom;
 
     const pull = Math.min(Math.abs(tx - sx) * 0.5, 120);
     const csx = sx + (link.fromAnchor === "end" ? pull : -pull);
@@ -314,7 +326,7 @@ function propagateLinks(movedId, deltaStart, deltaEnd, visited) {
 
     // Apply the shift to the successor's startWeek (all link types move successor in time)
     const newStart = parseFloat((target.startWeek + delta).toFixed(1));
-    if (newStart >= 1 && newStart <= years.length * 52) {
+    if (newStart >= 1 && newStart <= getTotalWeekCount()) {
       target.startWeek = newStart;
     }
 

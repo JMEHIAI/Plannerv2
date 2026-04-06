@@ -17,10 +17,11 @@ function openAlarmForDate(dateStr, itemId) {
 function openAlarmForWeek(w, itemId, dayIndex) {
   if (alarms && getAlarmAbsWeek) {
     currentAlarmItemId = itemId || null;
-    let yrIndex = Math.floor((w - 1) / 52);
+    const weekInfo = getYearWeekInfo(w);
+    let yrIndex = weekInfo.yearIndex;
     let yrNum = parseInt(years[yrIndex]);
     if (isNaN(yrNum)) yrNum = new Date().getFullYear();
-    let wkNum = ((w - 1) % 52) + 1;
+    let wkNum = weekInfo.relWeek;
 
     let jan4 = new Date(yrNum, 0, 4);
     let startOfYear = new Date(jan4.getTime());
@@ -63,43 +64,10 @@ function getAlarmAbsWeek(alarm) {
   if (parts.length !== 3) return -1;
   // Parse dates explicitly as local midnight to avoid timezone shifts
   const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
-
-  // Ensure we accurately map the date to the correct ISO week for the specified year array
-  const targetYear = d.getFullYear();
-  let yi = years.findIndex((y) => String(y).trim() === String(targetYear));
-  let yr = targetYear;
-
-  // If the exact year isn't found, check if it falls into the end of a previous year or start of next year's ISO span
-  if (yi < 0) {
-    for (let idx = 0; idx < years.length; idx++) {
-      const candidateYear = parseInt(years[idx]);
-      if (isNaN(candidateYear)) continue;
-      const jan4 = new Date(candidateYear, 0, 4);
-      const startOfWeek1 = new Date(jan4.getTime());
-      startOfWeek1.setDate(jan4.getDate() - (jan4.getDay() || 7) + 1);
-      const endOfWeek52 = new Date(startOfWeek1.getTime());
-      endOfWeek52.setDate(startOfWeek1.getDate() + 52 * 7 - 1);
-      if (d >= startOfWeek1 && d <= endOfWeek52) {
-        yi = idx;
-        yr = candidateYear;
-        break;
-      }
-    }
-  }
-
+  const isoInfo = getIsoYearWeekFromDate(d);
+  const yi = years.findIndex((y) => String(parseInt(y)) === String(isoInfo.isoYear));
   if (yi < 0) return -1;
-
-  const jan4 = new Date(yr, 0, 4);
-  const startOfYear = new Date(jan4.getTime());
-  startOfYear.setDate(jan4.getDate() - (jan4.getDay() || 7) + 1);
-
-  // Use UTC based calculation to completely eliminate Daylight Saving Time interference
-  const utc1 = Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
-  const utc2 = Date.UTC(startOfYear.getFullYear(), startOfYear.getMonth(), startOfYear.getDate());
-  const diffDays = Math.floor((utc1 - utc2) / 86400000);
-  const wk = Math.floor(diffDays / 7) + 1;
-
-  return yi * 52 + Math.min(Math.max(wk, 1), 52);
+  return getAbsWeekFromYearWeek(yi, isoInfo.isoWeek);
 }
 
 function toggleAlarmPanel() {

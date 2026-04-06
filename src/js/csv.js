@@ -3,7 +3,8 @@
 // ═══════════════════════════════════════════════════════════════
 
 /** Build and return the full CSV string for the current planner state. */
-function generateCSVString() {
+function generateCSVString(options) {
+  options = options || {};
   const csv = ["Years," + years.join(",")];
   csv.push(
     "Globals," +
@@ -21,6 +22,10 @@ function generateCSVString() {
     "," +
     showLinks,
   );
+  if (options.includeEditorLock && typeof _buildEditorLockCSVLine === "function") {
+    const lockLine = _buildEditorLockCSVLine();
+    if (lockLine) csv.push(lockLine);
+  }
   csv.push(
     "FiltersName," +
     filters.name
@@ -236,7 +241,14 @@ function _importCSVText(text) {
         showComments = values[3] === "true";
         commentWidth = parseInt(values[4]) || 200;
         nameWidthBase = parseInt(values[5]) || 350;
-        highlightedWeek = values[6] ? parseInt(values[6]) : null;
+        if (values[6]) {
+          if (values[6].startsWith("W")) highlightedWeek = values[6];
+          else if (values[6].includes(".")) highlightedWeek = parseFloat(values[6]);
+          else highlightedWeek = parseInt(values[6], 10);
+          if (Number.isNaN(highlightedWeek)) highlightedWeek = null;
+        } else {
+          highlightedWeek = null;
+        }
         showLinks = values[7] !== "false"; // default true if missing
         continue;
       }
@@ -273,6 +285,9 @@ function _importCSVText(text) {
           if (tComp) newT.composition = tComp;
           customTemplates.push(newT);
         }
+        continue;
+      }
+      if (values[0] === "EditorLock") {
         continue;
       }
       if (values[0] === "Holiday") {
@@ -415,6 +430,7 @@ function mergeCSV(e) {
     // Find the start line for items, collecting alarms along the way
     let startLine = 0;
     const incomingAlarms = [];
+    const incomingLinks = [];
     const oldToNewPersonIds = {};
     while (
       startLine < lines.length &&
@@ -428,6 +444,13 @@ function mergeCSV(e) {
           time: v[4],
           duration: parseInt(v[5]),
           title: v[6],
+        });
+      } else if (v[0] === "Link") {
+        incomingLinks.push({
+          oldFromId: parseInt(v[2]),
+          fromAnchor: v[3],
+          oldToId: parseInt(v[4]),
+          toAnchor: v[5],
         });
       } else if (v[0] === "Template") {
         const tName = v[1];
@@ -548,11 +571,26 @@ function mergeCSV(e) {
       });
     });
 
+    incomingLinks.forEach((l) => {
+      const fromId = idMap[l.oldFromId];
+      const toId = idMap[l.oldToId];
+      if (!fromId || !toId) return;
+      links.push({
+        id: nextLinkId++,
+        fromId,
+        fromAnchor: l.fromAnchor,
+        toId,
+        toAnchor: l.toAnchor,
+      });
+    });
+
     render();
     if (typeof markChanged === 'function') markChanged();
     let msg = "Merged " + newItems.length + " item rows";
     if (incomingAlarms.length)
       msg += " and " + incomingAlarms.length + " alarms";
+    if (incomingLinks.length)
+      msg += " and " + incomingLinks.length + " links";
     msg += ' from "' + file.name + '" into the planner.';
     alert(msg);
   };
@@ -561,8 +599,104 @@ function mergeCSV(e) {
 }
 
 function exportJPEG() {
-  // Use browser print — works fully offline, no CDN needed.
-  // In the print dialog choose "Save as PDF" or your printer.
-  // Print CSS (in style.css @media print) hides all UI chrome automatically.
-  window.print();
+  // Load html2canvas dynamically (cached after first load)
+  function loadLib() {
+    return new Promise(function (resolve, reject) {
+      if (window.html2canvas) { resolve(); return; }
+      var s = document.createElement("script");
+      s.src = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+      s.onload = resolve;
+      s.onerror = function () { reject(new Error("Could not load html2canvas")); };
+      document.head.appendChild(s);
+    });
+  }
+
+  var container = document.querySelector(".planner-container");
+  var grid = document.getElementById("grid");
+  if (!container || !grid) return;
+
+  loadLib().then(function () {
+    // Save state
+    var origScrollLeft = container.scrollLeft;
+    var origScrollTop = container.scrollTop;
+    var origOverflow = container.style.overflow;
+    var origHeight = container.style.height;
+    var origMaxHeight = container.style.maxHeight;
+    var origFlex = container.style.flex;
+    var origBodyOverflow = document.body.style.overflow;
+    var origBodyHeight = document.body.style.height;
+    var origBodyZoom = document.body.style.zoom;
+
+    // Hide UI chrome
+    var hideSelectors = [
+      ".settings-btn", ".delete-btn", ".add-sub-btn", ".duplicate-btn",
+      ".lock-btn", ".toggle-btn", ".drag-handle", ".resize-handle",
+      ".controls-group", ".assignee-select", ".icon-btn",
+      ".link-anchor", "#link-svg-overlay", "#link-mode-banner",
+      ".comment-resizer", ".col-resizer"
+    ];
+    var hiddenEls = [];
+    hideSelectors.forEach(function (sel) {
+      document.querySelectorAll(sel).forEach(function (el) {
+        hiddenEls.push({ el: el, orig: el.style.display });
+        el.style.display = "none";
+      });
+    });
+
+    // Expand to full content
+    container.style.overflow = "visible";
+    container.style.height = "auto";
+    container.style.maxHeight = "none";
+    container.style.flex = "none";
+    document.body.style.overflow = "visible";
+    document.body.style.height = "auto";
+    document.body.style.zoom = "1";
+    container.scrollLeft = 0;
+    container.scrollTop = 0;
+    void grid.offsetHeight;
+
+    html2canvas(grid, {
+      scale: 2,
+      useCORS: true,
+      backgroundColor: "#ffffff",
+      width: grid.scrollWidth,
+      height: grid.scrollHeight,
+      scrollX: 0,
+      scrollY: 0,
+      windowWidth: grid.scrollWidth,
+      windowHeight: grid.scrollHeight,
+    }).then(function (canvas) {
+      restore();
+      canvas.toBlob(function (blob) {
+        if (!blob) { alert("JPEG export failed."); return; }
+        var a = document.createElement("a");
+        var d = new Date();
+        var dateStr = d.getFullYear() + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0");
+        a.download = "planner_" + dateStr + ".jpg";
+        a.href = URL.createObjectURL(blob);
+        a.click();
+        URL.revokeObjectURL(a.href);
+      }, "image/jpeg", 0.92);
+    }).catch(function (err) {
+      restore();
+      console.error("Export error:", err);
+      alert("JPEG export failed: " + err.message);
+    });
+
+    function restore() {
+      container.style.overflow = origOverflow;
+      container.style.height = origHeight;
+      container.style.maxHeight = origMaxHeight;
+      container.style.flex = origFlex;
+      document.body.style.overflow = origBodyOverflow;
+      document.body.style.height = origBodyHeight;
+      document.body.style.zoom = origBodyZoom;
+      container.scrollLeft = origScrollLeft;
+      container.scrollTop = origScrollTop;
+      hiddenEls.forEach(function (h) { h.el.style.display = h.orig; });
+    }
+  }).catch(function (err) {
+    alert("Could not load the export library. Check your internet connection.");
+    console.error(err);
+  });
 }

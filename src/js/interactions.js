@@ -86,7 +86,16 @@ function onResize(e) {
   let weeksMoved = 0;
   if (zoomMode === "weeks") weeksMoved = snapCells;
   else if (zoomMode === "days") weeksMoved = snapCells * 0.2;
-  else if (zoomMode === "months") weeksMoved = snapCells * (13 / 3);
+  else if (zoomMode === "months") {
+    if (resizeType === "left") {
+      const targetStart = getAbsWeekFromMonthPosition(getMonthPositionFromAbsWeek(initialStartWeek) + snapCells);
+      weeksMoved = parseFloat((targetStart - initialStartWeek).toFixed(1));
+    } else {
+      const initialEndWeek = initialStartWeek + initialDuration;
+      const targetEnd = getAbsWeekFromMonthPosition(getMonthPositionFromAbsWeek(initialEndWeek) + snapCells);
+      weeksMoved = parseFloat((targetEnd - initialEndWeek).toFixed(1));
+    }
+  }
 
   if (resizeType === "left") {
     let newStart = parseFloat((initialStartWeek + weeksMoved).toFixed(1));
@@ -110,8 +119,8 @@ function onResize(e) {
   } else if (resizeType === "right") {
     let newDuration = parseFloat((initialDuration + weeksMoved).toFixed(1));
     if (newDuration < 0.2) newDuration = 0.2;
-    if (initialStartWeek + newDuration - 1 > years.length * 52) {
-      newDuration = years.length * 52 - initialStartWeek + 1;
+    if (initialStartWeek + newDuration - 1 > getTotalWeekCount()) {
+      newDuration = getTotalWeekCount() - initialStartWeek + 1;
     }
 
     _resizeNewDuration = newDuration;
@@ -278,7 +287,9 @@ function onDrag(e) {
   } else if (zoomMode === "days") {
     weeksMoved = snapCells * 0.2;
   } else if (zoomMode === "months") {
-    weeksMoved = snapCells * (13 / 3);
+    const baseStartWeek = initialStartWeeks[draggingId] || 1;
+    const targetStart = getAbsWeekFromMonthPosition(getMonthPositionFromAbsWeek(baseStartWeek) + snapCells);
+    weeksMoved = parseFloat((targetStart - baseStartWeek).toFixed(1));
   }
 
   let minAllowedMoved = -Infinity;
@@ -290,8 +301,8 @@ function onDrag(e) {
       const minMove = 1 - initialStart;
       if (minMove > minAllowedMoved) minAllowedMoved = minMove;
     }
-    if (initialStart <= years.length * 52) {
-      const maxMove = years.length * 52 - initialStart;
+    if (initialStart <= getTotalWeekCount()) {
+      const maxMove = getTotalWeekCount() - initialStart;
       if (maxMove < maxAllowedMoved) maxAllowedMoved = maxMove;
     }
   });
@@ -307,7 +318,7 @@ function onDrag(e) {
   let snapPx = 0;
   if (zoomMode === "weeks") snapPx = weeksMoved * cellWidth;
   else if (zoomMode === "days") snapPx = weeksMoved * 5 * cellWidth;   // 1 week = 5 day-cells × 20px
-  else if (zoomMode === "months") snapPx = weeksMoved * 3 / 13 * cellWidth; // inverse of (13/3)
+  else if (zoomMode === "months") snapPx = snapCells * cellWidth;
   if (!_interactionRafId) {
     _interactionRafId = requestAnimationFrame(() => {
       _interactionRafId = null;

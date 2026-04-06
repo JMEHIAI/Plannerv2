@@ -91,16 +91,15 @@ function computeEffectiveDuration(startWeek, duration, itemAssignees) {
   // Only count holidays that apply to this item's assignees
   const applicableHolidays = holidays.filter(h => holidayApplies(h, itemAssignees || []));
   if (!applicableHolidays.length || duration <= 0) return duration;
-  const workDaysNeeded = Math.round(duration * 5);
-  if (workDaysNeeded === 0) return duration;
+  let remainingWorkDays = duration * 5;
+  if (remainingWorkDays <= 0) return duration;
 
   // Resolve fractional startWeek to absolute week + day index
   const startW = Math.floor(startWeek);
   const startDayFract = Math.round((startWeek - startW) * 5); // 0=Mon
 
-  const yearIndex = Math.floor((startW - 1) / 52);
-  const yearNum = parseInt(years[yearIndex]) || new Date().getFullYear();
-  const relWeek = ((startW - 1) % 52) + 1;
+  const weekInfo = getYearWeekInfo(startW);
+  const yearNum = parseInt(weekInfo.yearLabel) || new Date().getFullYear();
   const jan4 = new Date(yearNum, 0, 4);
   const weekStart = new Date(jan4.getTime());
   weekStart.setDate(jan4.getDate() - (jan4.getDay() || 7) + 1); // Mon of ISO wk1
@@ -108,63 +107,80 @@ function computeEffectiveDuration(startWeek, duration, itemAssignees) {
   // Date of the first day of this block
   const blockStart = new Date(weekStart.getTime());
   blockStart.setDate(
-    weekStart.getDate() + (relWeek - 1) * 7 + startDayFract,
+    weekStart.getDate() + (weekInfo.relWeek - 1) * 7 + startDayFract,
   );
 
-  let workDone = 0;
-  let holidaysHit = 0;
+  let occupiedWorkDays = 0;
   let calDays = 0;
-  const maxCalDays = workDaysNeeded + applicableHolidays.length + 30; // safety cap
+  const maxCalDays = Math.ceil(remainingWorkDays) + applicableHolidays.length + 30; // safety cap
   const applicableHolidayDates = new Set(applicableHolidays.map(h => h.date));
 
-  while (workDone < workDaysNeeded && calDays < maxCalDays) {
+  while (remainingWorkDays > 0.0001 && calDays < maxCalDays) {
     const cur = new Date(blockStart.getTime());
     cur.setDate(blockStart.getDate() + calDays);
     const dow = cur.getDay(); // 0=Sun, 6=Sat
     if (dow !== 0 && dow !== 6) {
-      if (!applicableHolidayDates.has(formatDateStr(cur))) {
-        workDone++;
+      if (applicableHolidayDates.has(formatDateStr(cur))) {
+        occupiedWorkDays += 1;
       } else {
-        holidaysHit++;
+        const workedToday = Math.min(1, remainingWorkDays);
+        occupiedWorkDays += workedToday;
+        remainingWorkDays -= workedToday;
       }
     }
     calDays++;
   }
 
-  // Each holiday in the span adds exactly 1 working-day slot (1/5 week)
-  return (workDaysNeeded + holidaysHit) / 5;
+  return parseFloat((occupiedWorkDays / 5).toFixed(4));
 }
 
 // ── Year layout helper (used by render and click handlers) ──────
 function _computeYearLayout() {
   const cw = zoomMode === "days" ? 20 : zoomMode === "months" ? 80 : 28;
-  const cols = zoomMode === "days" ? 260 : zoomMode === "months" ? 12 : 52;
   const collW = 2;
-  const widths = years.map((_, yi) => hiddenYears.has(yi) ? cols * collW : cols * cw);
+  const yearWeekCounts = years.map((yearLabel) => getIsoWeeksInYear(yearLabel));
+  const yearDayCounts = yearWeekCounts.map((count) => count * 5);
+  const widths = years.map((_, yi) => {
+    const cols = zoomMode === "days" ? yearDayCounts[yi] : zoomMode === "months" ? 12 : yearWeekCounts[yi];
+    return hiddenYears.has(yi) ? cols * collW : cols * cw;
+  });
   const offsets = [];
   let acc = 0;
   widths.forEach(w => { offsets.push(acc); acc += w; });
-  return { cw, cols, collW, widths, offsets, total: acc };
+  return { cw, collW, widths, offsets, total: acc, yearWeekCounts, yearDayCounts };
+}
+
+function _monthColumnToAbsWeek(yearIndex, monthIndex) {
+  let absWeek = 1;
+  for (let yi = 0; yi < years.length; yi++) {
+    const spans = getMonthWeekSpans(years[yi]).map((span) => span.weeks);
+    for (let mi = 0; mi < 12; mi++) {
+      if (yi === yearIndex && mi === monthIndex) return absWeek;
+      absWeek += spans[mi];
+    }
+  }
+  return getAbsWeekFromYearWeek(yearIndex, 1);
 }
 
 // ── Global click handlers for timeline cells ────────────────────
 function handleTlDblClick(e, itemId) {
   if (e.target.closest('.bar, .milestone, .range-bar, .resize-handle')) return;
   const x = e.offsetX;
-  const { cw, cols, collW, widths } = _computeYearLayout();
+  const { cw, collW, widths, yearWeekCounts, yearDayCounts } = _computeYearLayout();
   let remaining = x, snapW = 1, dayIdx = 0;
   for (let yi = 0; yi < years.length; yi++) {
     const yw = widths[yi];
     if (remaining <= yw || yi === years.length - 1) {
       const effCw = hiddenYears.has(yi) ? collW : cw;
       if (zoomMode === "days") {
-        const col = Math.max(0, Math.min(Math.floor(remaining / effCw), 259));
-        snapW = yi * 52 + Math.floor(col / 5) + 1;
+        const col = Math.max(0, Math.min(Math.floor(remaining / effCw), yearDayCounts[yi] - 1));
+        snapW = getAbsWeekFromYearWeek(yi, Math.floor(col / 5) + 1);
         dayIdx = col % 5;
       } else if (zoomMode === "weeks") {
-        snapW = yi * 52 + Math.max(0, Math.floor(remaining / effCw)) + 1;
+        snapW = getAbsWeekFromYearWeek(yi, Math.max(0, Math.min(Math.floor(remaining / effCw), yearWeekCounts[yi] - 1)) + 1);
       } else {
-        snapW = yi * 12 + Math.max(0, Math.floor(remaining / effCw)) + 1;
+        const monthIndex = Math.max(0, Math.min(Math.floor(remaining / effCw), 11));
+        snapW = _monthColumnToAbsWeek(yi, monthIndex);
       }
       break;
     }
@@ -175,19 +191,20 @@ function handleTlDblClick(e, itemId) {
 
 function handleTimelineHeaderClick(e) {
   const x = e.offsetX;
-  const { cw, cols, collW, widths } = _computeYearLayout();
+  const { cw, collW, widths, yearWeekCounts, yearDayCounts } = _computeYearLayout();
+  const { offsets: yearDayOffsets } = getYearDayOffsets();
   let remaining = x;
   for (let yi = 0; yi < years.length; yi++) {
     const yw = widths[yi];
     if (remaining <= yw || yi === years.length - 1) {
       const effCw = hiddenYears.has(yi) ? collW : cw;
       if (zoomMode === "days") {
-        const col = Math.max(0, Math.min(Math.floor(remaining / effCw), 259));
-        const w = yi * 52 + Math.floor(col / 5) + 1;
+        const col = Math.max(0, Math.min(Math.floor(remaining / effCw), yearDayCounts[yi] - 1));
+        const w = getAbsWeekFromYearWeek(yi, Math.floor(col / 5) + 1);
         const dayFrac = (col % 5) * 0.2;
         toggleHighlight(dayFrac > 0 ? parseFloat((w + dayFrac).toFixed(1)) : "W" + w);
       } else if (zoomMode === "weeks") {
-        const w = yi * 52 + Math.max(0, Math.floor(remaining / effCw)) + 1;
+        const w = getAbsWeekFromYearWeek(yi, Math.max(0, Math.min(Math.floor(remaining / effCw), yearWeekCounts[yi] - 1)) + 1);
         toggleHighlight("W" + w);
       } else {
         const c = yi * 12 + Math.max(0, Math.floor(remaining / effCw)) + 1;
@@ -201,20 +218,21 @@ function handleTimelineHeaderClick(e) {
 
 function handleTimelineHeaderDblClick(e) {
   const x = e.offsetX;
-  const { cw, cols, collW, widths } = _computeYearLayout();
+  const { cw, collW, widths, yearWeekCounts, yearDayCounts } = _computeYearLayout();
+  const { offsets: yearDayOffsets } = getYearDayOffsets();
   let remaining = x;
   for (let yi = 0; yi < years.length; yi++) {
     const yw = widths[yi];
     if (remaining <= yw || yi === years.length - 1) {
       const effCw = hiddenYears.has(yi) ? collW : cw;
       if (zoomMode === "days" && _currentDayColMeta) {
-        const col = Math.max(0, Math.min(Math.floor(remaining / effCw), 259));
-        const metaIdx = yi * 260 + col;
+        const col = Math.max(0, Math.min(Math.floor(remaining / effCw), yearDayCounts[yi] - 1));
+        const metaIdx = yearDayOffsets[yi] + col;
         if (_currentDayColMeta[metaIdx]) openAlarmForDate(_currentDayColMeta[metaIdx].fullDateStr);
       } else {
         const w = zoomMode === "months"
-          ? yi * 12 + Math.max(0, Math.floor(remaining / effCw)) + 1
-          : yi * 52 + Math.max(0, Math.floor(remaining / effCw)) + 1;
+          ? _monthColumnToAbsWeek(yi, Math.max(0, Math.min(Math.floor(remaining / effCw), 11)))
+          : getAbsWeekFromYearWeek(yi, Math.max(0, Math.min(Math.floor(remaining / effCw), yearWeekCounts[yi] - 1)) + 1);
         openAlarmForWeek(w);
       }
       return;
@@ -296,12 +314,17 @@ function render() {
 
   // ── Year layout ────────────────────────────────────────────────
   const totalYears = years.length;
-  const colsPerYear = zoomMode === "days" ? 260 : zoomMode === "months" ? 12 : 52;
   const cellW = zoomMode === "days" ? 20 : zoomMode === "months" ? 80 : 28;
   const collapsedCellW = 2;
+  const { offsets: yearWeekOffsets, totalWeeks } = getYearWeekOffsets();
+  const { offsets: yearDayOffsets, totalDays } = getYearDayOffsets();
+  const yearWeekCounts = years.map((yearLabel) => getIsoWeeksInYear(yearLabel));
+  const yearDayCounts = yearWeekCounts.map((count) => count * 5);
 
   const yearWidths = years.map((_, yi) =>
-    hiddenYears.has(yi) ? colsPerYear * collapsedCellW : colsPerYear * cellW
+    hiddenYears.has(yi)
+      ? (zoomMode === "days" ? yearDayCounts[yi] : zoomMode === "months" ? 12 : yearWeekCounts[yi]) * collapsedCellW
+      : (zoomMode === "days" ? yearDayCounts[yi] : zoomMode === "months" ? 12 : yearWeekCounts[yi]) * cellW
   );
   const yearOffsets = [];
   let _tlAcc = 0;
@@ -315,21 +338,7 @@ function render() {
   // ── Month spans cache ──────────────────────────────────────────
   const _cacheKey = years.join(",");
   if (!_monthSpansCache || _monthSpansCacheKey !== _cacheKey) {
-    const computed = [];
-    for (let y = 0; y < years.length; y++) {
-      const yearNum = parseInt(years[y]) || new Date().getFullYear();
-      const jan4 = new Date(yearNum, 0, 4);
-      const startOfYear = new Date(jan4.getTime());
-      startOfYear.setDate(jan4.getDate() - (jan4.getDay() || 7) + 1);
-      const yearSpans = Array(12).fill(0).map((_, i) => ({ name: _MONTH_NAMES[i], weeks: 0 }));
-      for (let w = 1; w <= 52; w++) {
-        const thursday = new Date(startOfYear.getTime());
-        thursday.setDate(startOfYear.getDate() + (w - 1) * 7 + 3);
-        yearSpans[thursday.getMonth()].weeks++;
-      }
-      computed.push(yearSpans);
-    }
-    _monthSpansCache = computed;
+    _monthSpansCache = years.map((yearLabel) => getMonthWeekSpans(yearLabel));
     _monthSpansCacheKey = _cacheKey;
   }
   const dynamicMonthSpans = _monthSpansCache;
@@ -368,7 +377,7 @@ function render() {
           const diff = Math.floor((hd - soy) / 86400000);
           if (diff >= 0) {
             const relW = Math.floor(diff / 7) + 1;
-            if (relW >= 1 && relW <= 52) _holidayAbsWeeks.add(yi * 52 + relW);
+            if (relW >= 1 && relW <= yearWeekCounts[yi]) _holidayAbsWeeks.add(getAbsWeekFromYearWeek(yi, relW));
           }
           break;
         }
@@ -390,10 +399,10 @@ function render() {
           const soy = new Date(jan4.getTime());
           soy.setDate(jan4.getDate() - (jan4.getDay() || 7) + 1);
           const diff = Math.floor((hd - soy) / 86400000);
-          if (diff >= 0 && diff < 52 * 7) {
+          if (diff >= 0 && diff < yearWeekCounts[yi] * 7) {
             const dow = diff % 7;
             if (dow < 5) {
-              const col = (yi * 52 + Math.floor(diff / 7)) * 5 + dow + 1;
+              const col = yearDayOffsets[yi] + Math.floor(diff / 7) * 5 + dow + 1;
               _holidayDayCols.add(col);
               _dayColToHoliday.set(col, h);
               if (!h.people || h.people.length === 0) _generalHolidayDayCols.add(col);
@@ -411,7 +420,7 @@ function render() {
     if (_dayColMetaCache && _dayColMetaCacheKey === _cacheKey) {
       _dayColMeta = _dayColMetaCache;
     } else {
-      _dayColMeta = new Array(totalYears * 260);
+      _dayColMeta = new Array(totalDays);
       const _yearStarts = years.map((yr) => {
         const yearNum = parseInt(yr) || new Date().getFullYear();
         const jan4 = new Date(yearNum, 0, 4);
@@ -420,26 +429,28 @@ function render() {
         return soy;
       });
       const _DAY_LETTERS = ["M", "T", "W", "T", "F"];
-      for (let c = 1; c <= totalYears * 260; c++) {
-        const w = Math.floor((c - 1) / 5) + 1;
-        const dayIndex = (c - 1) % 5;
-        const yearIndex = Math.floor((w - 1) / 52);
-        const relativeWeek = ((w - 1) % 52) + 1;
+      let c = 0;
+      for (let yearIndex = 0; yearIndex < totalYears; yearIndex++) {
         const soy = _yearStarts[yearIndex];
-        const d = new Date(soy.getTime());
-        d.setDate(soy.getDate() + (relativeWeek - 1) * 7 + dayIndex);
-        const dd = pad2(d.getDate()), mm = pad2(d.getMonth() + 1);
-        const isWeekEnd = dayIndex === 4;
-        const isMonthEnd = isWeekEnd && _monthEndWeekSets[yearIndex].has(relativeWeek);
-        const exactWeekValue = w + dayIndex * 0.2;
-        _dayColMeta[c - 1] = {
-          letter: _DAY_LETTERS[dayIndex],
-          dateStr: dd,
-          fullDateStr: d.getFullYear() + "-" + mm + "-" + dd,
-          exactWeekValue,
-          isWeekEnd,
-          isMonthEnd,
-        };
+        for (let relativeWeek = 1; relativeWeek <= yearWeekCounts[yearIndex]; relativeWeek++) {
+          const absWeek = getAbsWeekFromYearWeek(yearIndex, relativeWeek);
+          for (let dayIndex = 0; dayIndex < 5; dayIndex++) {
+            const d = new Date(soy.getTime());
+            d.setDate(soy.getDate() + (relativeWeek - 1) * 7 + dayIndex);
+            const dd = pad2(d.getDate()), mm = pad2(d.getMonth() + 1);
+            const isWeekEnd = dayIndex === 4;
+            const isMonthEnd = isWeekEnd && _monthEndWeekSets[yearIndex].has(relativeWeek);
+            const exactWeekValue = absWeek + dayIndex * 0.2;
+            _dayColMeta[c++] = {
+              letter: _DAY_LETTERS[dayIndex],
+              dateStr: dd,
+              fullDateStr: d.getFullYear() + "-" + mm + "-" + dd,
+              exactWeekValue,
+              isWeekEnd,
+              isMonthEnd,
+            };
+          }
+        }
       }
       _dayColMetaCache = _dayColMeta;
       _dayColMetaCacheKey = _cacheKey;
@@ -479,8 +490,9 @@ function render() {
   // Convert absolute week (1-based, can be fractional) to px offset from timeline start
   function _wkX(sw) {
     const baseW = Math.max(1, Math.floor(sw));
-    const yi = Math.max(0, Math.min(Math.floor((baseW - 1) / 52), years.length - 1));
-    const relW = (baseW - 1) % 52; // 0-based week within year
+    const info = getYearWeekInfo(baseW);
+    const yi = info.yearIndex;
+    const relW = info.relWeek - 1; // 0-based week within year
     const eff = hiddenYears.has(yi) ? collapsedCellW : cellW;
     if (zoomMode === "days") {
       const dayI = Math.round((sw - Math.floor(sw)) * 5);
@@ -557,26 +569,26 @@ function render() {
     html += '<div class="cell header-cell comment-cell" style="border-bottom:none; z-index:30; height:24px;"></div>';
     html += '<div class="cell header-cell name-cell" style="border-bottom:none; z-index:30; height:24px;"></div>';
     html += '<div class="cell header-cell tl-header" style="padding:0; overflow:visible; height:24px;">';
-    for (let w = 1; w <= years.length * 52; w++) {
-      const yi = Math.floor((w - 1) / 52);
-      const relW = ((w - 1) % 52);
-      const x3 = yearOffsets[yi] + relW * 5 * (hiddenYears.has(yi) ? collapsedCellW : cellW);
-      const w3 = 5 * (hiddenYears.has(yi) ? collapsedCellW : cellW);
+    for (let yi = 0; yi < years.length; yi++) {
+      const eff = hiddenYears.has(yi) ? collapsedCellW : cellW;
       if (hiddenYears.has(yi)) {
-        if (relW === 0) {
-          html += '<div style="position:absolute; left:' + x3 + 'px; width:' + yearWidths[yi] + 'px; height:100%; background:#e8edf5;"></div>';
-        }
+        html += '<div style="position:absolute; left:' + yearOffsets[yi] + 'px; width:' + yearWidths[yi] + 'px; height:100%; background:#e8edf5;"></div>';
         continue;
       }
-      const isHighlighted = isHighlightActive(w, highlightedWeek);
-      const _row3Alarms = _alarmWeekMap.get(w) || [];
-      const hasAlarm = _row3Alarms.length > 0;
-      html += '<div style="position:absolute; left:' + x3 + 'px; width:' + w3 + 'px; height:100%; cursor:pointer; font-size:11px; font-weight:bold; color:#2563eb; display:flex; align-items:center; justify-content:center; border-right:2px solid #94a3b8; box-sizing:border-box;' +
-        (isHighlighted ? 'background:#fef08a;' : '') +
-        '" onclick="toggleHighlight(\'W\' + ' + w + ')" ondblclick="openAlarmForWeek(' + w + ')" title="Click to highlight week">W' +
-        (((w - 1) % 52) + 1) +
-        (hasAlarm ? ' <span title="' + _row3Alarms.map(a => a.title + " " + a.time).join(", ") + '" style="font-size:10px;">🔔</span>' : '') +
-        '</div>';
+      for (let relW = 1; relW <= yearWeekCounts[yi]; relW++) {
+        const absWeek = getAbsWeekFromYearWeek(yi, relW);
+        const x3 = yearOffsets[yi] + (relW - 1) * 5 * eff;
+        const w3 = 5 * eff;
+        const isHighlighted = isHighlightActive(absWeek, highlightedWeek);
+        const _row3Alarms = _alarmWeekMap.get(absWeek) || [];
+        const hasAlarm = _row3Alarms.length > 0;
+        html += '<div style="position:absolute; left:' + x3 + 'px; width:' + w3 + 'px; height:100%; cursor:pointer; font-size:11px; font-weight:bold; color:#2563eb; display:flex; align-items:center; justify-content:center; border-right:2px solid #94a3b8; box-sizing:border-box;' +
+          (isHighlighted ? 'background:#fef08a;' : '') +
+          '" onclick="toggleHighlight(\'W\' + ' + absWeek + ')" ondblclick="openAlarmForWeek(' + absWeek + ')" title="Click to highlight week">W' +
+          relW +
+          (hasAlarm ? ' <span title="' + _row3Alarms.map(a => a.title + " " + a.time).join(", ") + '" style="font-size:10px;">🔔</span>' : '') +
+          '</div>';
+      }
     }
     html += '</div></div>';
   }
@@ -591,74 +603,72 @@ function render() {
     '<div style="display:flex; align-items:flex-end; width: 100%; padding-bottom: 10px; min-width:0;">' +
     '<span style="font-size: 13px; font-weight: bold; line-height: 1.05;">Family / Project / Milestone / Activity</span>' +
     "</div>" +
-    '<button class="settings-btn' + (showSettings ? " active" : "") + '" onclick="toggleAllSettings()" title="Toggle Settings" style="align-self: flex-end; margin-bottom: 8px;">&#9881;</button>' +
+    '<button class="settings-btn' + (showSettings ? " active" : "") + '" onclick="toggleAllSettings()" title="Toggle Settings" style="align-self: flex-end; margin-bottom: 8px; font-size: 13px; gap: 4px;"><span style="font-size:18px;">&#9881;</span> Settings</button>' +
     "</div>";
 
   // Column header timeline cell — individual absolutely positioned labels
   html += '<div class="cell header-cell tl-header" style="padding:0; overflow:visible; height:56px;">';
   {
-    const totalCols4 = zoomMode === "weeks" ? totalYears * 52 : zoomMode === "days" ? totalYears * 260 : totalYears * 12;
     let _x4 = 0;
-    for (let c = 1; c <= totalCols4; c++) {
-      const yi = Math.floor((c - 1) / colsPerYear);
+    for (let yi = 0; yi < years.length; yi++) {
       const isHiddenYr = hiddenYears.has(yi);
       const eff4 = isHiddenYr ? collapsedCellW : cellW;
 
       if (isHiddenYr) {
-        // Draw single collapsed-year block once (at start of year)
-        const relC = (c - 1) % colsPerYear;
-        if (relC === 0) {
-          html += '<div style="position:absolute; left:' + _x4 + 'px; width:' + yearWidths[yi] + 'px; height:100%; background:#e8edf5;"></div>';
-          _x4 += yearWidths[yi];
-          c += colsPerYear - 1; // skip rest of year
-        }
+        html += '<div style="position:absolute; left:' + _x4 + 'px; width:' + yearWidths[yi] + 'px; height:100%; background:#e8edf5;"></div>';
+        _x4 += yearWidths[yi];
         continue;
       }
 
-      let label = "", extraStyle = "", clickH = "", dblClickH = "", titleH = "";
       if (zoomMode === "weeks") {
-        const relW = ((c - 1) % 52) + 1;
-        const _yi2 = Math.floor((c - 1) / 52);
-        const isHighlighted = isHighlightActive(c, highlightedWeek);
-        const _wkAlarms = _alarmWeekMap.get(c) || [];
-        const hasAlarm = _wkAlarms.length > 0;
-        const isMonthEnd = _monthEndWeekSets[_yi2].has(relW);
-        const _hldBorder = _holidayAbsWeeks.has(c) ? "border-bottom:3px solid #f59e0b;" : "";
-        label = String(relW) + (hasAlarm ? ' <span style="font-size:9px;">🔔</span>' : '');
-        extraStyle = (isHighlighted ? "background:#fef08a;" : "") + (isMonthEnd ? "border-right:4px solid #94a3b8;" : "border-right:1px solid #e2e8f0;") + _hldBorder;
-        clickH = 'onclick="toggleHighlight(\'W\' + ' + c + ')" ';
-        dblClickH = 'ondblclick="openAlarmForWeek(' + c + ')" ';
-        titleH = 'title="Click to highlight week"';
+        for (let relW = 1; relW <= yearWeekCounts[yi]; relW++) {
+          const absWeek = getAbsWeekFromYearWeek(yi, relW);
+          const isHighlighted = isHighlightActive(absWeek, highlightedWeek);
+          const _wkAlarms = _alarmWeekMap.get(absWeek) || [];
+          const hasAlarm = _wkAlarms.length > 0;
+          const isMonthEnd = _monthEndWeekSets[yi].has(relW);
+          const _hldBorder = _holidayAbsWeeks.has(absWeek) ? "border-bottom:3px solid #f59e0b;" : "";
+          const label = String(relW) + (hasAlarm ? ' <span style="font-size:9px;">🔔</span>' : '');
+          const extraStyle = (isHighlighted ? "background:#fef08a;" : "") + (isMonthEnd ? "border-right:4px solid #94a3b8;" : "border-right:1px solid #e2e8f0;") + _hldBorder;
+          html += '<div onclick="toggleHighlight(\'W\' + ' + absWeek + ')" ondblclick="openAlarmForWeek(' + absWeek + ')" title="Click to highlight week" style="position:absolute; left:' + _x4 + 'px; width:' + eff4 + 'px; height:100%; display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:12px; font-weight:600; color:#475569; box-sizing:border-box; ' + extraStyle + '">' + label + '</div>';
+          _x4 += eff4;
+        }
       } else if (zoomMode === "days") {
-        const _m = _dayColMeta[c - 1];
-        const isHighlighted = isHighlightActive(_m.exactWeekValue, highlightedWeek);
-        const isHoliday = _holidayDayCols.has(c);
-        const borderStyle = _m.isMonthEnd ? "border-right:4px solid #94a3b8;" : _m.isWeekEnd ? "border-right:2px solid #94a3b8;" : "border-right:1px dashed #e2e8f0;";
-        label = '<div style="display:flex;flex-direction:column;align-items:center;line-height:1.2;"><span>' + _m.letter + '</span><span style="font-size:9px;color:#64748b;">' + _m.dateStr + '</span></div>';
-        extraStyle = (isHighlighted ? "background:#fef08a;" : "") + (isHoliday ? "background-color:#b0bec5;" : "") + borderStyle;
-        clickH = 'onclick="toggleHighlight(' + _m.exactWeekValue + ')" ';
-        dblClickH = 'ondblclick="openAlarmForDate(\'' + _m.fullDateStr + '\')" ';
-        titleH = 'title="Click to highlight day"';
+        for (let relC = 0; relC < yearDayCounts[yi]; relC++) {
+          const absCol = yearDayOffsets[yi] + relC + 1;
+          const _m = _dayColMeta[absCol - 1];
+          const isHighlighted = isHighlightActive(_m.exactWeekValue, highlightedWeek);
+          const isHoliday = _holidayDayCols.has(absCol);
+          const borderStyle = _m.isMonthEnd ? "border-right:4px solid #94a3b8;" : _m.isWeekEnd ? "border-right:2px solid #94a3b8;" : "border-right:1px dashed #e2e8f0;";
+          const label = '<div style="display:flex;flex-direction:column;align-items:center;line-height:1.2;"><span>' + _m.letter + '</span><span style="font-size:9px;color:#64748b;">' + _m.dateStr + '</span></div>';
+          const extraStyle = (isHighlighted ? "background:#fef08a;" : "") + (isHoliday ? "background-color:#b0bec5;" : "") + borderStyle;
+          html += '<div onclick="toggleHighlight(' + _m.exactWeekValue + ')" ondblclick="openAlarmForDate(\'' + _m.fullDateStr + '\')" title="Click to highlight day" style="position:absolute; left:' + _x4 + 'px; width:' + eff4 + 'px; height:100%; display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:12px; font-weight:600; color:#475569; box-sizing:border-box; ' + extraStyle + '">' + label + '</div>';
+          _x4 += eff4;
+        }
       } else { // months
-        const _yi3 = Math.floor((c - 1) / 12);
-        const _mi = (c - 1) % 12;
-        const monthName = dynamicMonthSpans[_yi3][_mi].name;
-        const _mYN = parseInt(years[_yi3]);
-        const _mKey = _mYN + "-" + String(_mi + 1).padStart(2, "0");
-        const _mHldBorder = _holidayMonthKeys.has(_mKey) ? "border-bottom:3px solid #f59e0b;" : "";
-        const isHighlighted = isHighlightActive(c, highlightedWeek);
-        label = '<div style="font-size:11px;font-weight:bold;color:#64748b;text-align:center;">' + monthName + '</div>';
-        extraStyle = (isHighlighted ? "background:#fef08a;" : "") + "border-right:1px solid #e2e8f0;" + _mHldBorder;
-        clickH = 'onclick="toggleHighlight(' + c + ')" ';
-        dblClickH = '';
-        titleH = 'title="Click to highlight month\n' + monthName + '"';
+        for (let mi = 0; mi < 12; mi++) {
+          const monthCol = yi * 12 + mi + 1;
+          const monthName = dynamicMonthSpans[yi][mi].name;
+          const _mYN = parseInt(years[yi]);
+          const _mKey = _mYN + "-" + String(mi + 1).padStart(2, "0");
+          const _mHldBorder = _holidayMonthKeys.has(_mKey) ? "border-bottom:3px solid #f59e0b;" : "";
+          const isHighlighted = isHighlightActive(monthCol, highlightedWeek);
+          const label = '<div style="font-size:11px;font-weight:bold;color:#64748b;text-align:center;">' + monthName + '</div>';
+          const extraStyle = (isHighlighted ? "background:#fef08a;" : "") + "border-right:1px solid #e2e8f0;" + _mHldBorder;
+          html += '<div onclick="toggleHighlight(' + monthCol + ')" title="Click to highlight month\n' + monthName + '" style="position:absolute; left:' + _x4 + 'px; width:' + eff4 + 'px; height:100%; display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:12px; font-weight:600; color:#475569; box-sizing:border-box; ' + extraStyle + '">' + label + '</div>';
+          _x4 += eff4;
+        }
       }
-
-      html += '<div ' + clickH + dblClickH + titleH + ' style="position:absolute; left:' + _x4 + 'px; width:' + eff4 + 'px; height:100%; display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:12px; font-weight:600; color:#475569; box-sizing:border-box; ' + extraStyle + '">' + label + '</div>';
-      _x4 += eff4;
     }
   }
   html += '</div></div>'; // end tl-header + header-row-4
+
+  // In day view, milestones with no explicit day (integer startWeek) should
+  // appear on Wednesday (mid-week) rather than Monday. 0.4 fractional = day 2
+  // (Wed) in the 5-day-per-week layout.
+  function _msWeek(sw) {
+    return (zoomMode === "days" && sw % 1 === 0) ? sw + 0.4 : sw;
+  }
 
   // ── Data rows ──────────────────────────────────────────────────
   displayItems.forEach((item, index) => {
@@ -676,26 +686,50 @@ function render() {
       );
     }
 
+    // For parent items, compute bar bounds in pixel-space so the end
+    // aligns exactly with the milestone diamond tip in every zoom mode.
+    // Also track week-space bounds for label visibility and duration display.
+    let _parentBarLeftPx = null, _parentBarRightPx = null;
     if (hasChildren) {
-      let minStart = 999, maxEnd = 0;
+      let minStartPx = Infinity, maxEndPx = -Infinity;
+      let minStartWk = Infinity, maxEndWk = -Infinity;
       function traverse(parentId) {
         const kids = getChildren(parentId);
         kids.forEach((k) => {
-          if (k.startWeek < minStart) minStart = k.startWeek;
+          const kSw = k.type === "milestone" && (k.duration || 0) === 0 ? _msWeek(k.startWeek) : k.startWeek;
+          const kStartPx = zoomMode === "months"
+            ? _monthX(mapWeekToMonth(kSw))
+            : _wkX(kSw);
+          if (kStartPx < minStartPx) minStartPx = kStartPx;
+          if (k.startWeek < minStartWk) minStartWk = k.startWeek;
+
           let kDur = k.type === "task" && holidays.length > 0
             ? computeEffectiveDuration(k.startWeek, k.duration || 0, k.assignees || [])
             : k.duration || 0;
-          // Milestones have duration 0 — extend by half a week so the parent block ends at the diamond center
-          if (k.type === "milestone" && kDur === 0) kDur = 0.5;
-          const end = k.startWeek + kDur;
-          if (end > maxEnd) maxEnd = end;
+
+          let kEndPx;
+          if (k.type === "milestone" && kDur === 0) {
+            // End at the diamond center (half a cell past start)
+            const kEff = hiddenYears.has(getYearWeekInfo(Math.max(1, Math.floor(k.startWeek))).yearIndex) ? collapsedCellW : cellW;
+            kEndPx = kStartPx + kEff / 2;
+            kDur = 0.5; // week-space approximation for label/duration display
+          } else {
+            kEndPx = zoomMode === "months"
+              ? _monthX(mapWeekToMonth(k.startWeek + kDur))
+              : _wkX(k.startWeek + kDur);
+          }
+          const kEndWk = k.startWeek + kDur;
+          if (kEndPx > maxEndPx) maxEndPx = kEndPx;
+          if (kEndWk > maxEndWk) maxEndWk = kEndWk;
           traverse(k.id);
         });
       }
       traverse(item.id);
-      if (minStart !== 999) {
-        computedStartWeek = minStart;
-        computedDuration = Math.max(maxEnd - minStart, 0);
+      if (minStartPx !== Infinity) {
+        _parentBarLeftPx = minStartPx;
+        _parentBarRightPx = maxEndPx;
+        computedStartWeek = minStartWk;
+        computedDuration = Math.max(0, maxEndWk - minStartWk);
       }
     }
 
@@ -755,7 +789,7 @@ function render() {
         html += '<input class="name-input" type="text" value="' + item.name.replace(/"/g, "&quot;") + '" onchange="updateName(' + item.id + ', this.value)" placeholder="Milestone name...">';
       }
       const weekDisplay = formatYYWWD(item.startWeek);
-      html += '<input type="text" maxlength="6" value="' + weekDisplay + '" onchange="updateMilestoneDate(' + item.id + ', this.value)" title="Type YYWW or YYWW.D" style="width:52px;border:1px solid #cbd5e1;border-radius:4px;padding:2px 4px;font-size:11px;font-family:monospace;color:#92400e;background:#fffbeb;text-align:center;flex-shrink:0;">';
+      html += '<input type="text" maxlength="6" value="' + weekDisplay + '" onchange="updateMilestoneDate(' + item.id + ', this.value)" title="Type YYWW or YYWW.D" style="width:52px;border:1px solid #cbd5e1;border-radius:4px;padding:2px 4px;font-size:13px;font-family:monospace;color:#92400e;background:#fffbeb;text-align:center;flex-shrink:0;">';
     } else {
       if ((item.name === "New Activity" || item.name === "New Sub-activity" || /^Activity \d+$/.test(item.name)) && customTemplates.length > 0) {
         html += '<select class="name-input" onchange="applyActivityTemplate(' + item.id + ', this.value)">';
@@ -848,7 +882,11 @@ function render() {
     // ── Bar / Milestone rendering ─────────────────────────────────
     if (item.type === "task" || item.type === "project" || item.type === "family") {
       let barLeft, barWidth;
-      if (zoomMode === "months") {
+      if (_parentBarLeftPx !== null) {
+        // Parent items: use pixel-space bounds computed from children
+        barLeft = _parentBarLeftPx;
+        barWidth = Math.max(cellW / (zoomMode === "months" ? 4 : 2), _parentBarRightPx - _parentBarLeftPx);
+      } else if (zoomMode === "months") {
         const ms = mapWeekToMonth(computedStartWeek);
         const me = mapWeekToMonth(computedStartWeek + computedDuration);
         barLeft = _monthX(ms);
@@ -943,8 +981,9 @@ function render() {
       const _parentItem = items.find(i => i.id === item.parentId);
       const _parentIsMilestonesGroup = _parentItem && _parentItem.type === "milestones-group";
       if (!_parentIsMilestonesGroup) {
-        const msXRaw = zoomMode === "months" ? _monthX(mapWeekToMonth(item.startWeek)) : _wkX(item.startWeek);
-        const msEff = hiddenYears.has(Math.floor((Math.max(1, Math.floor(item.startWeek)) - 1) / 52)) ? collapsedCellW : cellW;
+        const _msSw = _msWeek(item.startWeek);
+        const msXRaw = zoomMode === "months" ? _monthX(mapWeekToMonth(_msSw)) : _wkX(_msSw);
+        const msEff = hiddenYears.has(getYearWeekInfo(item.startWeek).yearIndex) ? collapsedCellW : cellW;
         const msX = msXRaw + msEff / 2;
         const lineHeight = (totalRows - index + 1) * 48;
         const bgColor = item.color || "#f59e0b";
@@ -983,8 +1022,9 @@ function render() {
 
       const descMilestones = getDescendantMilestones(item.id);
       descMilestones.forEach((ms) => {
-        const msXRaw = zoomMode === "months" ? _monthX(mapWeekToMonth(ms.startWeek)) : _wkX(ms.startWeek);
-        const msEff = hiddenYears.has(Math.floor((Math.max(1, Math.floor(ms.startWeek)) - 1) / 52)) ? collapsedCellW : cellW;
+        const _msSw2 = _msWeek(ms.startWeek);
+        const msXRaw = zoomMode === "months" ? _monthX(mapWeekToMonth(_msSw2)) : _wkX(_msSw2);
+        const msEff = hiddenYears.has(getYearWeekInfo(ms.startWeek).yearIndex) ? collapsedCellW : cellW;
         const msX = msXRaw + msEff / 2;
         const msColor = ms.color || "#f59e0b";
         const msShortLabel = ms.name.replace(/\s*\(.*/, "").trim().toUpperCase();
@@ -1110,96 +1150,82 @@ function render() {
     ctx.clearRect(0, 0, totalTimelineW, bgH);
 
     // Draw vertical column lines
-    const totalCols = zoomMode === "weeks" ? totalYears * 52 : zoomMode === "days" ? totalYears * 260 : totalYears * 12;
     let _bgX = 0;
-    for (let c = 1; c <= totalCols; c++) {
-      const yi = Math.floor((c - 1) / colsPerYear);
+    for (let yi = 0; yi < years.length; yi++) {
       const isHiddenYr = hiddenYears.has(yi);
       const eff = isHiddenYr ? collapsedCellW : cellW;
+      const yearColCount = zoomMode === "weeks" ? yearWeekCounts[yi] : zoomMode === "days" ? yearDayCounts[yi] : 12;
 
       if (isHiddenYr) {
-        const relC = (c - 1) % colsPerYear;
-        if (relC === 0) {
-          // Draw collapsed year zone
-          ctx.fillStyle = "#f1f4f9";
-          ctx.fillRect(_bgX, 0, yearWidths[yi], bgH);
-          // Right border — offset by lw/2 to match CSS border-box positioning
-          ctx.strokeStyle = "#94a3b8";
-          ctx.lineWidth = 2;
-          ctx.setLineDash([]);
-          ctx.beginPath();
-          ctx.moveTo(_bgX + yearWidths[yi] - 1, 0);
-          ctx.lineTo(_bgX + yearWidths[yi] - 1, bgH);
-          ctx.stroke();
-          _bgX += yearWidths[yi];
-          c += colsPerYear - 1;
-        }
+        ctx.fillStyle = "#f1f4f9";
+        ctx.fillRect(_bgX, 0, yearWidths[yi], bgH);
+        ctx.strokeStyle = "#94a3b8";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(_bgX + yearWidths[yi] - 1, 0);
+        ctx.lineTo(_bgX + yearWidths[yi] - 1, bgH);
+        ctx.stroke();
+        _bgX += yearWidths[yi];
         continue;
       }
 
-      const relC = (c - 1) % colsPerYear;
-      const x = _bgX + eff; // right edge of this column
+      for (let relC = 0; relC < yearColCount; relC++) {
+        const x = _bgX + eff;
 
-      // Holiday column tint (data rows only)
-      if (zoomMode === "weeks" && _holidayAbsWeeks.has(c)) {
-        ctx.fillStyle = "rgba(245,158,11,0.12)";
-        ctx.fillRect(_bgX, headerH, eff, bgH - headerH);
-      } else if (zoomMode === "days" && _generalHolidayDayCols.has(c)) {
-        ctx.fillStyle = "rgba(176,190,197,0.35)";
-        ctx.fillRect(_bgX, headerH, eff, bgH - headerH);
-      }
+        let isHL = false;
+        let isMonthEnd = false;
+        let isWeekEnd = false;
 
-      // Highlighted column
-      let isHL = false;
-      if (zoomMode === "weeks") {
-        isHL = isHighlightActive(c, highlightedWeek);
-      } else if (zoomMode === "days") {
-        const _m = _dayColMeta ? _dayColMeta[c - 1] : null;
-        isHL = _m ? isHighlightActive(_m.exactWeekValue, highlightedWeek) : false;
-      } else {
-        isHL = isHighlightActive(c, highlightedWeek);
-      }
-      if (isHL) {
-        ctx.fillStyle = "rgba(254,240,138,0.4)";
-        ctx.fillRect(_bgX, 0, eff, bgH);
-      }
+        if (zoomMode === "weeks") {
+          const absWeek = getAbsWeekFromYearWeek(yi, relC + 1);
+          if (_holidayAbsWeeks.has(absWeek)) {
+            ctx.fillStyle = "rgba(245,158,11,0.12)";
+            ctx.fillRect(_bgX, headerH, eff, bgH - headerH);
+          }
+          isHL = isHighlightActive(absWeek, highlightedWeek);
+          isMonthEnd = _monthEndWeekSets[yi].has(relC + 1);
+        } else if (zoomMode === "days") {
+          const absCol = yearDayOffsets[yi] + relC + 1;
+          const _m = _dayColMeta ? _dayColMeta[absCol - 1] : null;
+          if (_generalHolidayDayCols.has(absCol)) {
+            ctx.fillStyle = "rgba(176,190,197,0.35)";
+            ctx.fillRect(_bgX, headerH, eff, bgH - headerH);
+          }
+          isHL = _m ? isHighlightActive(_m.exactWeekValue, highlightedWeek) : false;
+          isWeekEnd = (relC + 1) % 5 === 0;
+          isMonthEnd = isWeekEnd && _m && _m.isMonthEnd;
+        } else {
+          const monthCol = yi * 12 + relC + 1;
+          isHL = isHighlightActive(monthCol, highlightedWeek);
+        }
 
-      // Determine line style
-      let isMonthEnd = false, isWeekEnd = false;
-      if (zoomMode === "weeks") {
-        const relW = relC + 1;
-        isMonthEnd = _monthEndWeekSets[yi].has(relW);
-      } else if (zoomMode === "days") {
-        const intWeek = Math.floor(relC / 5) + 1;
-        isWeekEnd = (relC + 1) % 5 === 0;
-        isMonthEnd = isWeekEnd && _monthEndWeekSets[yi].has(intWeek);
-      }
-      // months: every column is a month, use regular line
+        if (isHL) {
+          ctx.fillStyle = "rgba(254,240,138,0.4)";
+          ctx.fillRect(_bgX, 0, eff, bgH);
+        }
 
-      // Determine line style first so we can offset the stroke to match CSS border-box positioning
-      // CSS border-right is drawn INSIDE the box: [x-borderW, x]
-      // Canvas stroke is centered on the path: [x-lw/2, x+lw/2]
-      // To align: draw at x - lw/2 so canvas stroke spans [x-lw, x] matching CSS border
-      let lw, lColor, lDash;
-      if (isMonthEnd) {
-        lColor = "#94a3b8"; lw = 4; lDash = null;
-      } else if (isWeekEnd) {
-        lColor = "#94a3b8"; lw = 2; lDash = null;
-      } else if (zoomMode === "days") {
-        lColor = "#e2e8f0"; lw = 1; lDash = [3, 3];
-      } else {
-        lColor = "#e2e8f0"; lw = 1; lDash = null;
+        let lw, lColor, lDash;
+        if (isMonthEnd) {
+          lColor = "#94a3b8"; lw = 4; lDash = null;
+        } else if (isWeekEnd) {
+          lColor = "#94a3b8"; lw = 2; lDash = null;
+        } else if (zoomMode === "days") {
+          lColor = "#e2e8f0"; lw = 1; lDash = [3, 3];
+        } else {
+          lColor = "#e2e8f0"; lw = 1; lDash = null;
+        }
+        const lx = x - lw / 2;
+        ctx.beginPath();
+        ctx.moveTo(lx, 0);
+        ctx.lineTo(lx, bgH);
+        ctx.strokeStyle = lColor;
+        ctx.lineWidth = lw;
+        if (lDash) ctx.setLineDash(lDash); else ctx.setLineDash([]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        _bgX += eff;
       }
-      const lx = x - lw / 2;
-      ctx.beginPath();
-      ctx.moveTo(lx, 0);
-      ctx.lineTo(lx, bgH);
-      ctx.strokeStyle = lColor;
-      ctx.lineWidth = lw;
-      if (lDash) ctx.setLineDash(lDash); else ctx.setLineDash([]);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      _bgX += eff;
     }
 
     // Draw horizontal row separator lines (data area only)

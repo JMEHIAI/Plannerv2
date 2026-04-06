@@ -210,20 +210,167 @@ function getShortYear(yearIndex) {
   return String(yearIndex + 1).padStart(2, "0");
 }
 
+function getIsoWeeksInYear(yearValue) {
+  const yearNum = parseInt(yearValue);
+  if (isNaN(yearNum)) return 52;
+  const dec28 = new Date(yearNum, 11, 28);
+  const jan4 = new Date(yearNum, 0, 4);
+  const startOfWeek1 = new Date(jan4.getTime());
+  startOfWeek1.setDate(jan4.getDate() - (jan4.getDay() || 7) + 1);
+  const diffDays = Math.floor((Date.UTC(dec28.getFullYear(), dec28.getMonth(), dec28.getDate()) - Date.UTC(startOfWeek1.getFullYear(), startOfWeek1.getMonth(), startOfWeek1.getDate())) / 86400000);
+  return Math.floor(diffDays / 7) + 1;
+}
+
+function getYearWeekOffsets() {
+  const offsets = [];
+  let acc = 0;
+  years.forEach((yearLabel) => {
+    offsets.push(acc);
+    acc += getIsoWeeksInYear(yearLabel);
+  });
+  return { offsets, totalWeeks: acc };
+}
+
+function getYearDayOffsets() {
+  const offsets = [];
+  let acc = 0;
+  years.forEach((yearLabel) => {
+    offsets.push(acc);
+    acc += getIsoWeeksInYear(yearLabel) * 5;
+  });
+  return { offsets, totalDays: acc };
+}
+
+function getTotalWeekCount() {
+  return getYearWeekOffsets().totalWeeks;
+}
+
+function getTotalDayCount() {
+  return getYearDayOffsets().totalDays;
+}
+
+function getYearWeekInfo(absWeek) {
+  const { offsets, totalWeeks } = getYearWeekOffsets();
+  if (years.length === 0) {
+    return {
+      yearIndex: 0,
+      relWeek: 1,
+      weeksInYear: 52,
+      yearLabel: "",
+      yearOffset: 0,
+      absWeek: 1,
+    };
+  }
+
+  const clampedWeek = Math.max(1, Math.min(Math.floor(absWeek), Math.max(1, totalWeeks)));
+  for (let yi = years.length - 1; yi >= 0; yi--) {
+    if (clampedWeek > offsets[yi]) {
+      return {
+        yearIndex: yi,
+        relWeek: clampedWeek - offsets[yi],
+        weeksInYear: getIsoWeeksInYear(years[yi]),
+        yearLabel: years[yi],
+        yearOffset: offsets[yi],
+        absWeek: clampedWeek,
+      };
+    }
+  }
+
+  return {
+    yearIndex: 0,
+    relWeek: 1,
+    weeksInYear: getIsoWeeksInYear(years[0]),
+    yearLabel: years[0],
+    yearOffset: offsets[0] || 0,
+    absWeek: 1,
+  };
+}
+
+function getAbsWeekFromYearWeek(yearIndex, relWeek) {
+  const { offsets } = getYearWeekOffsets();
+  if (yearIndex < 0 || yearIndex >= years.length) return 1;
+  const weeksInYear = getIsoWeeksInYear(years[yearIndex]);
+  const clampedWeek = Math.max(1, Math.min(relWeek, weeksInYear));
+  return offsets[yearIndex] + clampedWeek;
+}
+
+function getMonthWeekSpans(yearValue) {
+  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const yearNum = parseInt(yearValue) || new Date().getFullYear();
+  const jan4 = new Date(yearNum, 0, 4);
+  const startOfYear = new Date(jan4.getTime());
+  startOfYear.setDate(jan4.getDate() - (jan4.getDay() || 7) + 1);
+  const spans = monthNames.map((name) => ({ name, weeks: 0 }));
+  const totalWeeks = getIsoWeeksInYear(yearNum);
+
+  for (let w = 1; w <= totalWeeks; w++) {
+    const thursday = new Date(startOfYear.getTime());
+    thursday.setDate(startOfYear.getDate() + (w - 1) * 7 + 3);
+    spans[thursday.getMonth()].weeks++;
+  }
+
+  return spans;
+}
+
+function getMonthPositionFromAbsWeek(absWeek) {
+  let weekCursor = 1;
+  for (let yi = 0; yi < years.length; yi++) {
+    const spans = getMonthWeekSpans(years[yi]);
+    for (let mi = 0; mi < 12; mi++) {
+      const monthWeeks = spans[mi].weeks;
+      if (absWeek >= weekCursor && absWeek < weekCursor + monthWeeks) {
+        return yi * 12 + mi + 1 + (absWeek - weekCursor) / monthWeeks;
+      }
+      weekCursor += monthWeeks;
+    }
+  }
+  return years.length * 12 + 0.99;
+}
+
+function getAbsWeekFromMonthPosition(monthPos) {
+  const clampedPos = Math.max(1, monthPos);
+  const monthIndexFloat = clampedPos - 1;
+  const yi = Math.max(0, Math.min(Math.floor(monthIndexFloat / 12), years.length - 1));
+  const mi = Math.max(0, Math.min(Math.floor(monthIndexFloat - yi * 12), 11));
+  const frac = monthIndexFloat - Math.floor(monthIndexFloat);
+  let weekCursor = 1;
+
+  for (let y = 0; y < yi; y++) {
+    weekCursor += getMonthWeekSpans(years[y]).reduce((sum, span) => sum + span.weeks, 0);
+  }
+  for (let m = 0; m < mi; m++) {
+    weekCursor += getMonthWeekSpans(years[yi])[m].weeks;
+  }
+
+  const monthWeeks = getMonthWeekSpans(years[yi])[mi].weeks || 1;
+  return parseFloat((weekCursor + frac * monthWeeks).toFixed(1));
+}
+
+function getIsoYearWeekFromDate(dateValue) {
+  const date = new Date(Date.UTC(
+    dateValue.getFullYear(),
+    dateValue.getMonth(),
+    dateValue.getDate(),
+  ));
+  date.setUTCDate(date.getUTCDate() + 4 - (date.getUTCDay() || 7));
+  const isoYear = date.getUTCFullYear();
+  const yearStart = new Date(Date.UTC(isoYear, 0, 1));
+  const isoWeek = Math.ceil((((date - yearStart) / 86400000) + 1) / 7);
+  return { isoYear, isoWeek };
+}
+
 function weekToYYWW(absWeek) {
-  const yi = Math.floor((absWeek - 1) / 52);
-  const ww = ((absWeek - 1) % 52) + 1;
-  return getShortYear(yi) + String(ww).padStart(2, "0");
+  const info = getYearWeekInfo(absWeek);
+  return getShortYear(info.yearIndex) + String(info.relWeek).padStart(2, "0");
 }
 
 function formatYYWWD(absWeek) {
   if (!absWeek) return "";
   const baseWeek = Math.max(1, Math.floor(absWeek));
-  const yrIndex = Math.floor((baseWeek - 1) / 52);
-  const yrStr = years[yrIndex] || "2026";
+  const info = getYearWeekInfo(baseWeek);
+  const yrStr = info.yearLabel || "2026";
   const yy = yrStr.slice(-2);
-  const wkFull = ((baseWeek - 1) % 52) + 1;
-  const wk = String(wkFull).padStart(2, "0");
+  const wk = String(info.relWeek).padStart(2, "0");
   const offset = absWeek - Math.floor(absWeek);
   const d = Math.round(offset / 0.2) + 1;
   return yy + wk + (d > 1 ? "." + Math.min(5, d) : "");
@@ -237,7 +384,7 @@ function parseYYWWD(str) {
   if (yyww.length < 3) return null;
   const yy = yyww.substring(0, 2);
   const ww = parseInt(yyww.substring(2));
-  if (ww < 1 || ww > 52) return null;
+  if (isNaN(ww) || ww < 1) return null;
 
   let yrIdx = years.findIndex((y) => y.endsWith(yy));
 
@@ -252,8 +399,10 @@ function parseYYWWD(str) {
       // Prepend years and shift all items
       while (parseInt(years[0]) > targetYear) {
         const fy = parseInt(years[0]);
-        years.unshift(String(fy - 1));
-        items.forEach(item => { item.startWeek += 52; });
+        const newYear = String(fy - 1);
+        years.unshift(newYear);
+        const addedWeeks = getIsoWeeksInYear(newYear);
+        items.forEach(item => { item.startWeek += addedWeeks; });
       }
     } else if (targetYear > lastYear) {
       // Append years
@@ -267,7 +416,10 @@ function parseYYWWD(str) {
     if (yrIdx === -1) return null;
   }
 
-  const baseWeek = yrIdx * 52 + ww;
+  const weeksInTargetYear = getIsoWeeksInYear(years[yrIdx]);
+  if (ww > weeksInTargetYear) return null;
+
+  const baseWeek = getAbsWeekFromYearWeek(yrIdx, ww);
   const offset = (Math.max(1, Math.min(5, d)) - 1) * 0.2;
   return baseWeek + offset;
 }
@@ -289,9 +441,19 @@ function holidayApplies(h, itemAssignees) {
 }
 
 function getLastItemEndWeek() {
-  const displayItems = getDisplayItems();
-  if (displayItems.length === 0) return 1;
-  const lastItem = displayItems[displayItems.length - 1];
-  const raw = Math.min(years.length * 52, lastItem.startWeek + (lastItem.duration || 0));
+  if (items.length === 0) return 1;
+
+  let maxEndWeek = 1;
+  items.forEach((item) => {
+    let itemDuration = item.duration || 0;
+    if (item.type === "task" && holidays.length > 0 && typeof computeEffectiveDuration === "function") {
+      itemDuration = computeEffectiveDuration(item.startWeek, itemDuration, item.assignees || []);
+    } else if (item.type === "milestone" && itemDuration === 0) {
+      itemDuration = 0.5;
+    }
+    maxEndWeek = Math.max(maxEndWeek, item.startWeek + itemDuration);
+  });
+
+  const raw = Math.min(getTotalWeekCount(), maxEndWeek);
   return Math.round(raw * 5) / 5;
 }

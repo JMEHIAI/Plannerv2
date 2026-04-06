@@ -87,6 +87,8 @@ function renderWorkloadView() {
     return;
   }
 
+  const activePeopleIds = new Set(people.map((p) => p.id));
+
   // Find week range of all assignments (1-based absolute weeks)
   let minWeek = Infinity,
     maxWeek = -Infinity;
@@ -107,51 +109,34 @@ function renderWorkloadView() {
   if (granularity === "days") {
     const dayNames = ["Mon", "Tue", "Wed", "Thu", "Fri"];
     for (let w = minWeek; w < maxWeek; w++) {
+      const weekInfo = getYearWeekInfo(w);
       for (let d = 0; d < 5; d++) {
-        const yearIdx = Math.floor((w - 1) / 52);
-        const weekInYear = ((w - 1) % 52) + 1;
         slots.push({
           start: w + d / 5,
           end: w + (d + 1) / 5,
           label: dayNames[d],
-          sublabel: d === 0 ? "W" + weekInYear : "",
-          yearIdx,
-          year: years[yearIdx] || "",
+          sublabel: d === 0 ? "W" + weekInfo.relWeek : "",
+          yearIdx: weekInfo.yearIndex,
+          year: weekInfo.yearLabel || "",
         });
       }
     }
   } else if (granularity === "weeks") {
     for (let w = minWeek; w < maxWeek; w++) {
-      const yearIdx = Math.floor((w - 1) / 52);
-      const weekInYear = ((w - 1) % 52) + 1;
+      const weekInfo = getYearWeekInfo(w);
       slots.push({
         start: w,
         end: w + 1,
-        label: "W" + weekInYear,
-        sublabel: weekInYear === 1 ? years[yearIdx] || "" : "",
-        yearIdx,
-        year: years[yearIdx] || "",
+        label: "W" + weekInfo.relWeek,
+        sublabel: weekInfo.relWeek === 1 ? weekInfo.yearLabel || "" : "",
+        yearIdx: weekInfo.yearIndex,
+        year: weekInfo.yearLabel || "",
       });
     }
   } else {
-    // Months
-    const monthSpans = [
-      { name: "Jan", weeks: 4 },
-      { name: "Feb", weeks: 4 },
-      { name: "Mar", weeks: 5 },
-      { name: "Apr", weeks: 4 },
-      { name: "May", weeks: 4 },
-      { name: "Jun", weeks: 5 },
-      { name: "Jul", weeks: 4 },
-      { name: "Aug", weeks: 4 },
-      { name: "Sep", weeks: 5 },
-      { name: "Oct", weeks: 4 },
-      { name: "Nov", weeks: 4 },
-      { name: "Dec", weeks: 5 },
-    ];
-    let absWeek = 1;
     for (let y = 0; y < years.length; y++) {
-      monthSpans.forEach((m) => {
+      let absWeek = getAbsWeekFromYearWeek(y, 1);
+      getMonthWeekSpans(years[y]).forEach((m) => {
         const start = absWeek,
           end = absWeek + m.weeks;
         if (start < maxWeek && end > minWeek) {
@@ -173,6 +158,7 @@ function renderWorkloadView() {
   const slotData = slots.map((slot) => {
     const assignedSet = new Set();
     const taskMap = {};
+    const assignmentCount = {};
     assignedItems.forEach((item) => {
       const iStart = item.startWeek;
       const iEnd = item.startWeek + (item.duration || 1);
@@ -180,13 +166,16 @@ function renderWorkloadView() {
         Math.min(iEnd, slot.end) - Math.max(iStart, slot.start);
       if (overlap > 0) {
         item.assignees.forEach((pid) => {
+          if (!activePeopleIds.has(pid)) return;
           assignedSet.add(pid);
+          assignmentCount[pid] = (assignmentCount[pid] || 0) + 1;
           if (!taskMap[pid]) taskMap[pid] = [];
           taskMap[pid].push(item.name || "Task");
         });
       }
     });
-    return { ...slot, assignedSet, taskMap };
+    const overloadedCount = Object.values(assignmentCount).filter((count) => count > 1).length;
+    return { ...slot, assignedSet, taskMap, assignmentCount, overloadedCount };
   });
 
   // --- Build HTML ---
@@ -230,16 +219,19 @@ function renderWorkloadView() {
       <div style="display:flex; flex:1; gap:1px; height:100%;">`;
 
     slotData.forEach((s, si) => {
-      const isAssigned = s.assignedSet.has(p.id);
+      const assignmentCount = s.assignmentCount[p.id] || 0;
+      const isAssigned = assignmentCount > 0;
+      const isOverbooked = assignmentCount > 1;
       const taskNames = s.taskMap[p.id]
         ? [...new Set(s.taskMap[p.id])].join(", ")
         : "";
       const isNewYear = si > 0 && s.yearIdx !== slotData[si - 1].yearIdx;
       const borderL = isNewYear ? "2px solid #cbd5e1" : "none";
       const tooltip = isAssigned
-        ? `${p.name}: ${taskNames} (${s.label} ${s.year})`
+        ? `${p.name}: ${taskNames} (${s.label} ${s.year})${isOverbooked ? ` • ${assignmentCount} overlapping assignments` : ""}`
         : `${p.name}: free (${s.label} ${s.year})`;
-      html += `<div style="flex:1; background:${isAssigned ? "#6366f1" : "#e2e8f0"}; border-radius:1px; height:100%; border-left:${borderL}; opacity:${isAssigned ? "1" : "0.35"};" title="${tooltip}"></div>`;
+      const bgColor = isOverbooked ? "#ef4444" : isAssigned ? "#6366f1" : "#e2e8f0";
+      html += `<div style="flex:1; background:${bgColor}; border-radius:1px; height:100%; border-left:${borderL}; opacity:${isAssigned ? "1" : "0.35"};" title="${tooltip}"></div>`;
     });
 
     html += `</div></div>`;
@@ -259,12 +251,16 @@ function renderWorkloadView() {
     const isNewYear = si > 0 && s.yearIdx !== slotData[si - 1].yearIdx;
     const borderL = isNewYear ? "2px solid #cbd5e1" : "none";
     const color =
-      freeCount === 0
+      s.overloadedCount > 0
+        ? "#ef4444"
+        : freeCount === 0
         ? "#ef4444"
         : assignedCount / totalPeople >= 0.7
           ? "#f59e0b"
           : "#22c55e";
-    const tooltip = `${freeCount} of ${totalPeople} free on ${s.label} ${s.year}`;
+    const tooltip = s.overloadedCount > 0
+      ? `${freeCount} of ${totalPeople} free on ${s.label} ${s.year}; ${s.overloadedCount} overloaded`
+      : `${freeCount} of ${totalPeople} free on ${s.label} ${s.year}`;
     html += `<div style="flex:1; background:${color}; border-radius:1px; height:100%; border-left:${borderL}; display:flex; align-items:center; justify-content:center;" title="${tooltip}">
       ${slots.length <= 40 ? `<span style="font-size:8px; font-weight:700; color:white; line-height:1;">${freeCount}</span>` : ""}
     </div>`;
@@ -277,7 +273,7 @@ function renderWorkloadView() {
     <span style="display:flex;align-items:center;gap:4px;"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#6366f1;"></span>Assigned</span>
     <span style="display:flex;align-items:center;gap:4px;"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#22c55e;"></span>Free</span>
     <span style="display:flex;align-items:center;gap:4px;"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#f59e0b;"></span>≥70% booked</span>
-    <span style="display:flex;align-items:center;gap:4px;"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#ef4444;"></span>Full</span>
+    <span style="display:flex;align-items:center;gap:4px;"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#ef4444;"></span>Full / overloaded</span>
   </div>`;
 
   if (scrollable) {
@@ -514,8 +510,8 @@ function renderComposerUI() {
           <span style="font-size: 13px; font-weight: 500;">${t.name.replace(/</g, "&lt;")}</span>
         </div>
         <div style="display: flex; align-items: center; gap: 8px;">
-          <span style="font-size: 11px; color:#64748b;">x</span>
-          <input type="number" min="0.1" step="0.1" value="${item.quantity}" onchange="updateComposerQuantity(${index}, this.value)" style="width: 48px; padding: 4px; font-size: 12px; border: 1px solid #cbd5e1; border-radius: 4px;">
+          <span style="font-size: 11px; color:#64748b;">Qty</span>
+          <input type="number" min="0.1" step="0.1" value="${item.quantity}" onchange="updateComposerQuantity(${index}, this.value)" style="width: 48px; padding: 4px; font-size: 12px; border: 1px solid #cbd5e1; border-radius: 4px;" title="Quantity">
           <span style="font-size: 12px; font-weight: bold; width: 44px; text-align: right; color:#334155;">${Number((lineDur * 5).toFixed(1))} days</span>
           <button onclick="removeComposerItem(${index})" style="background: none; border: none; color: #ef4444; font-size: 16px; cursor: pointer; padding: 0 4px;" title="Remove">&times;</button>
         </div>
@@ -765,6 +761,12 @@ function toggleAllSettings() {
 
 function toggleComments() {
   showComments = !showComments;
+  // Also show/hide all block comments (ctrl+click popups)
+  items.forEach(item => {
+    if (item.blockComment) {
+      item.blockComment.isOpen = showComments;
+    }
+  });
   render();
 }
 

@@ -9,14 +9,19 @@ function addSubItem(parentId, type, defaults) {
   if (!parent) return;
   parent.isExpanded = true;
   const subItems = items.filter((i) => i.parentId === parentId);
-  let startWeek = parent.startWeek;
+  let startWeek = parent.startWeek + (parent.duration || 0);
   if (subItems.length > 0) {
-    const lastSub = subItems[subItems.length - 1];
-    startWeek = lastSub.startWeek + (lastSub.duration || 0);
-  } else {
-    startWeek = parent.startWeek + (parent.duration || 0);
+    startWeek = subItems.reduce((maxEnd, subItem) => {
+      let subDuration = subItem.duration || 0;
+      if (subItem.type === "task" && holidays.length > 0 && typeof computeEffectiveDuration === "function") {
+        subDuration = computeEffectiveDuration(subItem.startWeek, subDuration, subItem.assignees || []);
+      } else if (subItem.type === "milestone" && subDuration === 0) {
+        subDuration = 0.5;
+      }
+      return Math.max(maxEnd, subItem.startWeek + subDuration);
+    }, parent.startWeek);
   }
-  startWeek = Math.round(Math.min(years.length * 52, startWeek) * 5) / 5;
+  startWeek = Math.round(Math.min(getTotalWeekCount(), startWeek) * 5) / 5;
 
   items.push({
     id: nextId++,
@@ -303,7 +308,7 @@ function updateProjectName(id, name) {
         const lastMsOffset = config.milestones.reduce((max, m) => Math.max(max, m.offset), 0);
         const lastActEnd = startWeek + (config.activityCount - 1) * 2 + 2;
         const maxWeekNeeded = Math.max(startWeek + lastMsOffset, lastActEnd);
-        while (years.length * 52 < maxWeekNeeded) {
+        while (getTotalWeekCount() < maxWeekNeeded) {
           const lastYr = parseInt(years[years.length - 1]) || 2025;
           years.push(String(lastYr + 1));
         }
@@ -431,15 +436,8 @@ function updateYear(index, value) {
   pushUndo();
   const newYearNum = parseInt(value);
   if (isNaN(newYearNum)) { render(); return; }
-  const oldYearNum = parseInt(years[index]);
-  const yearDelta = newYearNum - oldYearNum;
-  if (yearDelta !== 0) {
-    const weekShift = -yearDelta * 52;
-    items.forEach(item => {
-      item.startWeek = Math.max(0.2, item.startWeek + weekShift);
-    });
-    years = years.map(y => String(parseInt(y) + yearDelta));
-  }
+  years = years.map((_, yi) => String(newYearNum + yi - index));
+  _updateYearCountLabel();
   render();
 }
 
@@ -469,11 +467,13 @@ function setMilestoneWeek(id, val) {
   if (yyww.length !== 4) return;
   const inputYY = yyww.slice(0, 2);
   const inputWW = parseInt(yyww.slice(2), 10);
-  if (isNaN(inputWW) || inputWW < 1 || inputWW > 52) return;
+  if (isNaN(inputWW) || inputWW < 1) return;
   const offset = (d - 1) * 0.2;
-  for (let yi = 0; yi < 3; yi++) {
+  for (let yi = 0; yi < years.length; yi++) {
     if (getShortYear(yi) === inputYY) {
-      const absWeek = yi * 52 + inputWW + offset;
+      const weeksInYear = getIsoWeeksInYear(years[yi]);
+      if (inputWW > weeksInYear) return;
+      const absWeek = getAbsWeekFromYearWeek(yi, inputWW) + offset;
       const item = items.find((i) => i.id === id);
       if (item) {
         const delta = absWeek - item.startWeek;
@@ -489,14 +489,18 @@ function setMilestoneWeek(id, val) {
 }
 
 function updateMilestoneDate(id, val) {
-  pushUndo();
   const item = items.find((i) => i.id === id);
   if (!item) return;
   const newWeek = parseYYWWD(val.trim());
-  if (newWeek !== null) {
-    item.startWeek = newWeek;
-    render();
-  }
+  if (newWeek === null) return;
+
+  const delta = parseFloat((newWeek - item.startWeek).toFixed(1));
+  if (delta === 0) return;
+
+  pushUndo();
+  item.startWeek = newWeek;
+  propagateLinks(id, delta, delta, new Set());
+  render();
 }
 
 function toggleGlobalLock() {
@@ -515,8 +519,14 @@ function toggleLock(id, event) {
 
   const isCurrentlyLocked = item.isLocked === true;
   const newLockedState = !isCurrentlyLocked;
+  const isolateOnly = !!(event && (event.ctrlKey || event.metaKey));
 
   item.isLocked = newLockedState;
+
+  if (isolateOnly) {
+    render();
+    return;
+  }
 
   function cascadeDescendants(parentId) {
     items
@@ -566,8 +576,10 @@ function addYear() {
 function prependYear() {
   pushUndo();
   const firstYear = parseInt(years[0]) || new Date().getFullYear();
-  years.unshift(String(firstYear - 1));
-  items.forEach(item => { item.startWeek += 52; });
+  const newYear = String(firstYear - 1);
+  years.unshift(newYear);
+  const addedWeeks = getIsoWeeksInYear(newYear);
+  items.forEach(item => { item.startWeek += addedWeeks; });
   _updateYearCountLabel();
   render();
 }
