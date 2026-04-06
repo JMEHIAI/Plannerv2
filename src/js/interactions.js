@@ -218,9 +218,14 @@ function startDrag(e, id) {
   e.preventDefault();
   draggingId = id;
   dragStartX = e.clientX;
+  dragLatestClientX = e.clientX;
+  const dragContainer = document.querySelector(".planner-container");
+  dragStartScrollLeft = dragContainer ? dragContainer.scrollLeft : 0;
 
   draggingItems = [id];
   initialStartWeeks = {};
+  _dragStartViewportBounds = new Map();
+  _dragPreviewSnapPx = 0;
 
   // Build O(1) lookup structures once for the entire drag session
   _dragItemsMap = new Map(items.map(i => [i.id, i]));
@@ -261,6 +266,10 @@ function startDrag(e, id) {
   draggingItems.forEach((itemId) => {
     const el = document.getElementById("block-" + itemId);
     if (el) {
+      if (typeof el.getBoundingClientRect === "function") {
+        const rect = el.getBoundingClientRect();
+        _dragStartViewportBounds.set(itemId, { left: rect.left, right: rect.right });
+      }
       el.style.willChange = "transform";
       el.classList.add("is-dragging");
     }
@@ -269,12 +278,59 @@ function startDrag(e, id) {
   document.addEventListener("mousemove", onDrag);
   document.addEventListener("mouseup", stopDrag);
   document.body.style.cursor = "grabbing";
+  _startDragAutoScroll();
 }
 
-function onDrag(e) {
-  if (!draggingId) return;
+function _getDraggedBlockViewportBounds() {
+  if (!draggingItems || draggingItems.length === 0) return null;
+  let minLeft = Infinity;
+  let maxRight = -Infinity;
+  draggingItems.forEach((itemId) => {
+    const startRect = _dragStartViewportBounds.get(itemId);
+    if (!startRect) return;
+    const left = startRect.left + _dragPreviewSnapPx;
+    const right = startRect.right + _dragPreviewSnapPx;
+    if (left < minLeft) minLeft = left;
+    if (right > maxRight) maxRight = right;
+  });
+  if (minLeft === Infinity || maxRight === -Infinity) return null;
+  return { left: minLeft, right: maxRight };
+}
 
-  const dx = e.clientX - dragStartX;
+function _getDragAutoScrollDelta(clientX) {
+  const container = document.querySelector(".planner-container");
+  const grid = document.getElementById("grid");
+  if (!container || !grid) return 0;
+
+  const containerRect = container.getBoundingClientRect();
+  const stickyNameCell = grid.querySelector(".header-row-4 .name-cell") || grid.querySelector(".name-cell");
+  const firstTlHeader = grid.querySelector(".tl-header");
+  const leftThreshold = stickyNameCell
+    ? stickyNameCell.getBoundingClientRect().right
+    : firstTlHeader
+      ? firstTlHeader.getBoundingClientRect().left
+      : containerRect.left;
+  const rightThreshold = containerRect.right - 24;
+  const maxStep = 28;
+  const draggedBounds = _getDraggedBlockViewportBounds();
+  const leftProbe = draggedBounds ? draggedBounds.left : clientX;
+
+  if (leftProbe <= leftThreshold) {
+    const strength = Math.min(1, (leftThreshold - leftProbe + 8) / 80);
+    return -Math.max(8, Math.round(maxStep * strength));
+  }
+  if (clientX > rightThreshold) {
+    const strength = Math.min(1, (clientX - rightThreshold) / 80);
+    return Math.max(8, Math.round(maxStep * strength));
+  }
+  return 0;
+}
+
+function _updateDragPosition(clientX) {
+  if (!draggingId) return;
+  const container = document.querySelector(".planner-container");
+  const scrollLeft = container ? container.scrollLeft : 0;
+  const dx = clientX - dragStartX + (scrollLeft - dragStartScrollLeft);
   let cellWidth = 28;
   if (zoomMode === "days") cellWidth = 20;
   if (zoomMode === "months") cellWidth = 80;
@@ -319,6 +375,7 @@ function onDrag(e) {
   if (zoomMode === "weeks") snapPx = weeksMoved * cellWidth;
   else if (zoomMode === "days") snapPx = weeksMoved * 5 * cellWidth;   // 1 week = 5 day-cells × 20px
   else if (zoomMode === "months") snapPx = snapCells * cellWidth;
+  _dragPreviewSnapPx = snapPx;
   if (!_interactionRafId) {
     _interactionRafId = requestAnimationFrame(() => {
       _interactionRafId = null;
@@ -330,10 +387,44 @@ function onDrag(e) {
   }
 }
 
+function onDrag(e) {
+  if (!draggingId) return;
+  dragLatestClientX = e.clientX;
+  _updateDragPosition(e.clientX);
+}
+
+function _startDragAutoScroll() {
+  if (_dragAutoScrollRafId) cancelAnimationFrame(_dragAutoScrollRafId);
+  const tick = () => {
+    if (!draggingId) {
+      _dragAutoScrollRafId = null;
+      return;
+    }
+    const container = document.querySelector(".planner-container");
+    if (container) {
+      const delta = _getDragAutoScrollDelta(dragLatestClientX);
+      if (delta !== 0) {
+        const maxScrollLeft = Math.max(0, container.scrollWidth - container.clientWidth);
+        const nextScrollLeft = Math.max(0, Math.min(maxScrollLeft, container.scrollLeft + delta));
+        if (nextScrollLeft !== container.scrollLeft) {
+          container.scrollLeft = nextScrollLeft;
+          _updateDragPosition(dragLatestClientX);
+        }
+      }
+    }
+    _dragAutoScrollRafId = requestAnimationFrame(tick);
+  };
+  _dragAutoScrollRafId = requestAnimationFrame(tick);
+}
+
 function stopDrag() {
   if (_interactionRafId) {
     cancelAnimationFrame(_interactionRafId);
     _interactionRafId = null;
+  }
+  if (_dragAutoScrollRafId) {
+    cancelAnimationFrame(_dragAutoScrollRafId);
+    _dragAutoScrollRafId = null;
   }
 
   // Clear visual transforms and will-change on all dragged bars
@@ -362,6 +453,10 @@ function stopDrag() {
 
   finalWeeksMoved = 0;
   draggingId = null;
+  dragLatestClientX = 0;
+  dragStartScrollLeft = 0;
+  _dragPreviewSnapPx = 0;
+  _dragStartViewportBounds = new Map();
   document.removeEventListener("mousemove", onDrag);
   document.removeEventListener("mouseup", stopDrag);
   document.body.style.cursor = "default";
@@ -759,38 +854,53 @@ function rowDrop(e, targetId) {
   draggedRowId = null;
 }
 
-// ── Open URLs and Local Folder paths via CTRL+Click inside comments ──
+function getCommentLinks(text) {
+  if (!text) return [];
+  const linkRegex = /(https?:\/\/[^\s]+|file:\/\/[^\s]+|[a-zA-Z]:\\[^\s]+|\\\\[^\s]+)/g;
+  return [...new Set(text.match(linkRegex) || [])];
+}
+
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function getCommentLinksHtml(text, compact) {
+  const links = getCommentLinks(text);
+  if (links.length === 0) return "";
+  const cls = compact ? "comment-link-list compact" : "comment-link-list";
+  return (
+    '<div class="' + cls + '">' +
+    links
+      .slice(0, compact ? 1 : 6)
+      .map((link) => {
+        const safeLink = escapeHtml(link);
+        return '<a class="comment-detected-link" href="#" onclick="openCommentLink(\'' + safeLink + '\'); return false;" title="' + safeLink + '">' + safeLink + "</a>";
+      })
+      .join("") +
+    "</div>"
+  );
+}
+
+function openCommentLink(link) {
+  if (!link) return;
+  window.open(link, "_blank");
+}
+
+// ── Open URLs and Local Folder paths via click inside comments ──
 function handleCommentLinkClick(e) {
+  const text = e.target.value;
+  if (!text) return;
   if (e.ctrlKey) {
-    const text = e.target.value;
-    if (!text) return;
-
-    // Improved regex to catch http/https URLs and typical Windows file/Sharepoint paths
-    const linkRegex = /(https?:\/\/[^\s]+|file:\/\/[^\s]+|[a-zA-Z]:\\[^\s]+|\\\\[^\s]+)/g;
-
-    const pos = e.target.selectionStart;
-    let match;
-    let foundLink = null;
-
-    while ((match = linkRegex.exec(text)) !== null) {
-      if (pos >= match.index && pos <= match.index + match[0].length) {
-        foundLink = match[0];
-        break;
-      }
-    }
-
-    // Fallback if the user ctrl+clicks the input but not exactly on the text, and there's 1 distinct link
-    if (!foundLink) {
-      const fallbackMatch = text.match(linkRegex);
-      if (fallbackMatch && fallbackMatch.length === 1) {
-        foundLink = fallbackMatch[0];
-      }
-    }
-
-    if (foundLink) {
+    const links = getCommentLinks(text);
+    if (links.length === 1) {
       e.preventDefault();
       e.stopPropagation();
-      window.open(foundLink, '_blank');
+      openCommentLink(links[0]);
     }
   }
 }

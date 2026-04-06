@@ -705,7 +705,13 @@
         <div>
           <label style="font-size: 11px; color: #64748b">Date
             <span id="alarm-date-week" style="color: #f59e0b; font-weight: 600; margin-left: 4px"></span></label>
-          <input id="alarm-date" class="alarm-field" type="date" onchange="updateAlarmDateWeek()" />
+          <div style="display:flex; gap:8px; align-items:center;">
+            <input id="alarm-date-text" class="alarm-field" type="text" placeholder="DD/MM/YYYY" onchange="commitAlarmDateText()" onblur="commitAlarmDateText()" />
+            <button type="button" class="outline" onclick="openAlarmDatePicker()" style="padding:6px 10px; min-width:44px; justify-content:center;" title="Open calendar">
+              &#128197;
+            </button>
+          </div>
+          <input id="alarm-date" type="date" onchange="syncAlarmDateFromNative()" style="position:absolute; opacity:0; pointer-events:none; width:1px; height:1px;" tabindex="-1" />
         </div>
         <div>
           <label style="font-size: 11px; color: #64748b">Time</label>
@@ -717,9 +723,17 @@
         <input id="alarm-duration" class="alarm-field" type="number" value="60" min="15" step="15"
           style="width: 70px" />
       </div>
-      <button class="success" onclick="addAlarm()" style="width: 100%">
-        + Add Alarm
-      </button>
+      <div style="display:flex; gap:8px;">
+        <button id="alarm-save-btn" class="success" onclick="saveAlarm()" style="width: 100%">
+          + Add Alarm
+        </button>
+        <button id="alarm-delete-btn" class="outline" onclick="deleteCurrentAlarm()" style="display:none; justify-content:center; min-width:88px; color:#dc2626; border-color:#fecaca;">
+          Delete
+        </button>
+        <button id="alarm-cancel-btn" class="outline" onclick="resetAlarmEditor(true)" style="display:none; justify-content:center; min-width:88px;">
+          Cancel
+        </button>
+      </div>
     </div>
     <div id="alarm-list"></div>
     <button class="outline" onclick="exportICS()" style="width: 100%; margin-top: 10px; justify-content: center">

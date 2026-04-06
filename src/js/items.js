@@ -2,6 +2,23 @@
 //  ITEM CRUD OPERATIONS
 // ═══════════════════════════════════════════════════════════════
 
+function snapNewItemStartWeek(startWeek, type) {
+  const normalized = Math.round(Math.max(1, startWeek) * 5) / 5;
+  if (type === "milestone") return normalized;
+  return Math.max(1, Math.ceil(normalized - 0.0001));
+}
+
+function ensureTimelineCovers(maxWeekNeeded) {
+  const needed = Math.max(1, Math.ceil(maxWeekNeeded - 0.0001));
+  let extended = false;
+  while (getTotalWeekCount() < needed) {
+    const lastYr = parseInt(years[years.length - 1]) || new Date().getFullYear();
+    years.push(String(lastYr + 1));
+    extended = true;
+  }
+  if (extended) _updateYearCountLabel();
+}
+
 // Consolidated addSubItem - replaces 3 near-identical functions
 function addSubItem(parentId, type, defaults) {
   pushUndo();
@@ -21,7 +38,8 @@ function addSubItem(parentId, type, defaults) {
       return Math.max(maxEnd, subItem.startWeek + subDuration);
     }, parent.startWeek);
   }
-  startWeek = Math.round(Math.min(getTotalWeekCount(), startWeek) * 5) / 5;
+  startWeek = snapNewItemStartWeek(Math.min(getTotalWeekCount(), startWeek), type);
+  ensureTimelineCovers(startWeek + (defaults.duration || 0));
 
   items.push({
     id: nextId++,
@@ -50,7 +68,8 @@ function addSubMilestone(parentId) {
 
 function addFamily() {
   pushUndo();
-  const startWeek = getLastItemEndWeek();
+  const startWeek = snapNewItemStartWeek(getLastItemEndWeek(), "family");
+  ensureTimelineCovers(startWeek + 12.0);
   const parentId = nextId++;
   items.push({
     id: parentId,
@@ -106,7 +125,8 @@ function addFamily() {
 
 function addProject() {
   pushUndo();
-  const startWeek = getLastItemEndWeek();
+  const startWeek = snapNewItemStartWeek(getLastItemEndWeek(), "project");
+  ensureTimelineCovers(startWeek + 12.0);
   items.push({
     id: nextId++,
     type: "project",
@@ -121,7 +141,8 @@ function addProject() {
 
 function addTask() {
   pushUndo();
-  const startWeek = getLastItemEndWeek();
+  const startWeek = snapNewItemStartWeek(getLastItemEndWeek(), "task");
+  ensureTimelineCovers(startWeek + 2);
   items.push({
     id: nextId++,
     type: "task",
@@ -136,7 +157,8 @@ function addTask() {
 
 function addMilestone() {
   pushUndo();
-  const startWeek = getLastItemEndWeek();
+  const startWeek = snapNewItemStartWeek(getLastItemEndWeek(), "milestone");
+  ensureTimelineCovers(startWeek);
   let group = items.find(i => i.type === "milestones-group" && !i.parentId);
   if (!group) {
     const groupId = nextId++;
@@ -308,11 +330,7 @@ function updateProjectName(id, name) {
         const lastMsOffset = config.milestones.reduce((max, m) => Math.max(max, m.offset), 0);
         const lastActEnd = startWeek + (config.activityCount - 1) * 2 + 2;
         const maxWeekNeeded = Math.max(startWeek + lastMsOffset, lastActEnd);
-        while (getTotalWeekCount() < maxWeekNeeded) {
-          const lastYr = parseInt(years[years.length - 1]) || 2025;
-          years.push(String(lastYr + 1));
-        }
-        _updateYearCountLabel();
+        ensureTimelineCovers(maxWeekNeeded);
       }
     }
     render();
@@ -346,6 +364,7 @@ function applyActivityTemplate(id, templateId) {
         item.duration = t.duration;
         item.color = t.color;
         item.isExpanded = true;
+        let maxWeekNeeded = item.startWeek + (t.duration || 0);
 
         if (t.composition && t.composition.length > 0) {
           let currentStartWeek = Math.round((item.startWeek || 1) * 25) / 25;
@@ -366,6 +385,7 @@ function applyActivityTemplate(id, templateId) {
                   parentId: item.id,
                   isExpanded: true,
                 });
+                maxWeekNeeded = Math.max(maxWeekNeeded, currentStartWeek + subDur * compItem.quantity);
                 for (let q = 0; q < compItem.quantity; q++) {
                   items.push({
                     id: nextId++,
@@ -376,6 +396,7 @@ function applyActivityTemplate(id, templateId) {
                     startWeek: currentStartWeek,
                     parentId: wrapperId,
                   });
+                  maxWeekNeeded = Math.max(maxWeekNeeded, currentStartWeek + subDur);
                   currentStartWeek = currentStartWeek + subDur;
                 }
               } else {
@@ -388,11 +409,13 @@ function applyActivityTemplate(id, templateId) {
                   startWeek: currentStartWeek,
                   parentId: item.id,
                 });
+                maxWeekNeeded = Math.max(maxWeekNeeded, currentStartWeek + subDur);
                 currentStartWeek = currentStartWeek + subDur;
               }
             }
           });
         }
+        ensureTimelineCovers(maxWeekNeeded);
       }
     }
   }

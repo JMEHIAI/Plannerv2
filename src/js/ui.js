@@ -732,7 +732,102 @@ function deletePerson(id) {
   render(); // Re-render planner
 }
 
+function _getZoomMetrics(mode) {
+  const cellWidth = mode === "days" ? 20 : mode === "months" ? 80 : 28;
+  const collapsedWidth = 2;
+  const yearWeekCounts = years.map((yearLabel) => getIsoWeeksInYear(yearLabel));
+  const yearDayCounts = yearWeekCounts.map((count) => count * 5);
+  const yearCols = years.map((_, yi) =>
+    mode === "days" ? yearDayCounts[yi] : mode === "months" ? 12 : yearWeekCounts[yi]
+  );
+  const yearWidths = yearCols.map((cols, yi) =>
+    (hiddenYears.has(yi) ? collapsedWidth : cellWidth) * cols
+  );
+  const yearOffsets = [];
+  let acc = 0;
+  yearWidths.forEach((w) => {
+    yearOffsets.push(acc);
+    acc += w;
+  });
+  return { cellWidth, collapsedWidth, yearWeekCounts, yearDayCounts, yearCols, yearWidths, yearOffsets, totalWidth: acc };
+}
+
+function _timelineXToAbsWeek(timelineX, mode) {
+  const metrics = _getZoomMetrics(mode);
+  let remaining = Math.max(0, timelineX);
+  for (let yi = 0; yi < years.length; yi++) {
+    const yearWidth = metrics.yearWidths[yi];
+    if (remaining <= yearWidth || yi === years.length - 1) {
+      const eff = hiddenYears.has(yi) ? metrics.collapsedWidth : metrics.cellWidth;
+      if (mode === "months") {
+        const monthFloat = Math.max(0, Math.min(remaining / eff, 11.9999));
+        return getAbsWeekFromMonthPosition(yi * 12 + 1 + monthFloat);
+      }
+      if (mode === "days") {
+        const colFloat = Math.max(0, Math.min(remaining / eff, metrics.yearDayCounts[yi] - 0.0001));
+        const wholeCol = Math.floor(colFloat);
+        const weekBase = getAbsWeekFromYearWeek(yi, Math.floor(wholeCol / 5) + 1);
+        const dayIndex = wholeCol % 5;
+        const dayFrac = colFloat - wholeCol;
+        return parseFloat((weekBase + dayIndex * 0.2 + dayFrac * 0.2).toFixed(4));
+      }
+      const weekFloat = Math.max(0, Math.min(remaining / eff, metrics.yearWeekCounts[yi] - 0.0001));
+      const wholeWeek = Math.floor(weekFloat);
+      return parseFloat((getAbsWeekFromYearWeek(yi, wholeWeek + 1) + (weekFloat - wholeWeek)).toFixed(4));
+    }
+    remaining -= yearWidth;
+  }
+  return 1;
+}
+
+function _absWeekToTimelineX(absWeek, mode) {
+  const metrics = _getZoomMetrics(mode);
+  if (mode === "months") {
+    const monthPos = getMonthPositionFromAbsWeek(absWeek);
+    const monthIndexFloat = Math.max(0, monthPos - 1);
+    const yi = Math.max(0, Math.min(Math.floor(monthIndexFloat / 12), years.length - 1));
+    const relMonth = monthIndexFloat - yi * 12;
+    const eff = hiddenYears.has(yi) ? metrics.collapsedWidth : metrics.cellWidth;
+    return metrics.yearOffsets[yi] + relMonth * eff;
+  }
+
+  const baseWeek = Math.max(1, Math.floor(absWeek));
+  const info = getYearWeekInfo(baseWeek);
+  const yi = info.yearIndex;
+  const eff = hiddenYears.has(yi) ? metrics.collapsedWidth : metrics.cellWidth;
+  if (mode === "days") {
+    const offset = Math.max(0, absWeek - baseWeek);
+    const dayFloat = offset * 5;
+    return metrics.yearOffsets[yi] + ((info.relWeek - 1) * 5 + dayFloat) * eff;
+  }
+  return metrics.yearOffsets[yi] + (info.relWeek - 1 + (absWeek - baseWeek)) * eff;
+}
+
+function _captureZoomFocus() {
+  const container = document.querySelector(".planner-container");
+  const grid = document.getElementById("grid");
+  if (!container || !grid) return null;
+  const firstTlHeader = grid.querySelector(".tl-header");
+  const timelineLeft = firstTlHeader ? firstTlHeader.offsetLeft : 0;
+  const viewportCenter = container.scrollLeft + container.clientWidth / 2;
+  const timelineX = Math.max(0, viewportCenter - timelineLeft);
+  return { absWeek: _timelineXToAbsWeek(timelineX, zoomMode) };
+}
+
+function _restoreZoomFocus(focus) {
+  const container = document.querySelector(".planner-container");
+  const grid = document.getElementById("grid");
+  if (!focus || !container || !grid) return;
+  const firstTlHeader = grid.querySelector(".tl-header");
+  const timelineLeft = firstTlHeader ? firstTlHeader.offsetLeft : 0;
+  const targetTimelineX = _absWeekToTimelineX(focus.absWeek, zoomMode);
+  const targetScrollLeft = Math.max(0, targetTimelineX + timelineLeft - container.clientWidth / 2);
+  const maxScrollLeft = Math.max(0, grid.scrollWidth - container.clientWidth);
+  container.scrollLeft = Math.min(maxScrollLeft, targetScrollLeft);
+}
+
 function toggleZoom() {
+  const focus = _captureZoomFocus();
   if (zoomMode === "weeks") {
     zoomMode = "days";
   } else if (zoomMode === "days") {
@@ -751,7 +846,10 @@ function toggleZoom() {
   // Invalidate header height cache so new zoom mode is measured fresh
   _cachedHeaderHeights = null;
   // Yield to the browser so the button label paints before the heavy render
-  requestAnimationFrame(() => requestAnimationFrame(() => render()));
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    render();
+    _restoreZoomFocus(focus);
+  }));
 }
 
 function toggleAllSettings() {

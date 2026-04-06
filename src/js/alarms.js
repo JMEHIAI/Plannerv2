@@ -4,9 +4,11 @@
 
 function openAlarmForDate(dateStr, itemId) {
   if (alarms && getAlarmAbsWeek) {
+    currentAlarmEditId = null;
     currentAlarmItemId = itemId || null;
-    document.getElementById("alarm-date").value = dateStr;
+    setAlarmDateValue(dateStr);
     updateAlarmDateWeek();
+    syncAlarmEditorState();
 
     let p = document.getElementById("alarm-panel");
     if (!p.classList.contains("open")) p.classList.add("open");
@@ -16,6 +18,7 @@ function openAlarmForDate(dateStr, itemId) {
 
 function openAlarmForWeek(w, itemId, dayIndex) {
   if (alarms && getAlarmAbsWeek) {
+    currentAlarmEditId = null;
     currentAlarmItemId = itemId || null;
     const weekInfo = getYearWeekInfo(w);
     let yrIndex = weekInfo.yearIndex;
@@ -37,8 +40,9 @@ function openAlarmForWeek(w, itemId, dayIndex) {
       "-" +
       pad2(target.getDate());
 
-    document.getElementById("alarm-date").value = dStr;
+    setAlarmDateValue(dStr);
     updateAlarmDateWeek();
+    syncAlarmEditorState();
 
     let p = document.getElementById("alarm-panel");
     if (!p.classList.contains("open")) p.classList.add("open");
@@ -46,18 +50,108 @@ function openAlarmForWeek(w, itemId, dayIndex) {
   }
 }
 
+function openAlarmEditor(alarmId) {
+  const alarm = alarms.find((a) => a.id === alarmId);
+  if (!alarm) return;
+  currentAlarmEditId = alarm.id;
+  currentAlarmItemId = alarm.itemId || null;
+  document.getElementById("alarm-title").value = alarm.title || "";
+  setAlarmDateValue(alarm.date || "");
+  document.getElementById("alarm-time").value = alarm.time || "09:00";
+  document.getElementById("alarm-duration").value = alarm.duration || 60;
+  updateAlarmDateWeek();
+  syncAlarmEditorState();
+  const p = document.getElementById("alarm-panel");
+  if (p && !p.classList.contains("open")) p.classList.add("open");
+  renderAlarmPanel();
+}
+
+function parseAlarmDisplayDate(dateText) {
+  if (!dateText) return "";
+  const trimmed = dateText.trim();
+  let m = trimmed.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (m) return m[3] + "-" + m[2] + "-" + m[1];
+  m = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return trimmed;
+  return "";
+}
+
+function setAlarmDateValue(dateStr) {
+  const nativeInput = document.getElementById("alarm-date");
+  const textInput = document.getElementById("alarm-date-text");
+  if (nativeInput) nativeInput.value = dateStr || "";
+  if (textInput) textInput.value = dateStr ? formatAlarmDisplayDate(dateStr) : "";
+}
+
+function syncAlarmDateFromNative() {
+  const nativeInput = document.getElementById("alarm-date");
+  setAlarmDateValue(nativeInput ? nativeInput.value : "");
+  updateAlarmDateWeek();
+}
+
+function commitAlarmDateText() {
+  const textInput = document.getElementById("alarm-date-text");
+  if (!textInput) return;
+  const parsed = parseAlarmDisplayDate(textInput.value);
+  if (parsed) {
+    setAlarmDateValue(parsed);
+    updateAlarmDateWeek();
+  } else if (textInput.value.trim() === "") {
+    setAlarmDateValue("");
+    updateAlarmDateWeek();
+  } else {
+    const nativeInput = document.getElementById("alarm-date");
+    textInput.value = nativeInput && nativeInput.value ? formatAlarmDisplayDate(nativeInput.value) : "";
+  }
+}
+
+function openAlarmDatePicker() {
+  const nativeInput = document.getElementById("alarm-date");
+  if (!nativeInput) return;
+  if (typeof nativeInput.showPicker === "function") {
+    nativeInput.showPicker();
+  } else {
+    nativeInput.focus();
+    nativeInput.click();
+  }
+}
+
 function updateAlarmDateWeek() {
   const dt = document.getElementById("alarm-date").value;
   const badge = document.getElementById("alarm-date-week");
   if (badge && dt) {
-    let absWeek = getAlarmAbsWeek({ date: dt });
-    badge.innerText = absWeek > 0 ? "(W" + absWeek + ")" : "";
+    const weekLabel = getAlarmDisplayWeekLabel({ date: dt });
+    badge.innerText = weekLabel ? "(" + weekLabel + ")" : "";
   } else if (badge) {
     badge.innerText = "";
   }
+  const textInput = document.getElementById("alarm-date-text");
+  if (textInput && dt) textInput.value = formatAlarmDisplayDate(dt);
+}
+
+function getAlarmDisplayWeekLabel(alarm) {
+  if (!alarm || !alarm.date) return "";
+  const parts = alarm.date.split("-");
+  if (parts.length !== 3) return "";
+  const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+  const isoInfo = getIsoYearWeekFromDate(d);
+  return isoInfo && isoInfo.isoWeek ? "W" + isoInfo.isoWeek : "";
+}
+
+function formatAlarmDisplayDate(dateStr) {
+  if (!dateStr) return "";
+  const parts = dateStr.split("-");
+  if (parts.length !== 3) return dateStr;
+  return parts[2] + "/" + parts[1] + "/" + parts[0];
 }
 
 function getAlarmAbsWeek(alarm) {
+  if (!alarm || !alarm.date) return -1;
+  const exactWeek = getAlarmExactWeek(alarm);
+  return exactWeek > 0 ? Math.floor(exactWeek) : -1;
+}
+
+function getAlarmExactWeek(alarm) {
   if (!alarm || !alarm.date) return -1;
   // Handle the ISO format
   const parts = alarm.date.split("-");
@@ -67,18 +161,44 @@ function getAlarmAbsWeek(alarm) {
   const isoInfo = getIsoYearWeekFromDate(d);
   const yi = years.findIndex((y) => String(parseInt(y)) === String(isoInfo.isoYear));
   if (yi < 0) return -1;
-  return getAbsWeekFromYearWeek(yi, isoInfo.isoWeek);
+  const absWeek = getAbsWeekFromYearWeek(yi, isoInfo.isoWeek);
+  const jsDay = d.getDay();
+  const weekdayIndex = jsDay === 0 ? 6 : jsDay - 1; // Monday = 0
+  const clampedWeekday = Math.max(0, Math.min(4, weekdayIndex));
+  return parseFloat((absWeek + clampedWeekday * 0.2).toFixed(1));
 }
 
 function toggleAlarmPanel() {
   const p = document.getElementById("alarm-panel");
   if (p) {
     p.classList.toggle("open");
+    if (p.classList.contains("open")) syncAlarmEditorState();
     renderAlarmPanel();
   }
 }
 
-function addAlarm() {
+function resetAlarmEditor(keepDate) {
+  currentAlarmEditId = null;
+  currentAlarmItemId = null;
+  document.getElementById("alarm-title").value = "";
+  if (!keepDate) setAlarmDateValue("");
+  document.getElementById("alarm-time").value = "09:00";
+  document.getElementById("alarm-duration").value = 60;
+  updateAlarmDateWeek();
+  syncAlarmEditorState();
+}
+
+function syncAlarmEditorState() {
+  const saveBtn = document.getElementById("alarm-save-btn");
+  const deleteBtn = document.getElementById("alarm-delete-btn");
+  const cancelBtn = document.getElementById("alarm-cancel-btn");
+  if (saveBtn) saveBtn.textContent = currentAlarmEditId ? "Save Alarm" : "+ Add Alarm";
+  if (deleteBtn) deleteBtn.style.display = currentAlarmEditId ? "inline-flex" : "none";
+  if (cancelBtn) cancelBtn.style.display = currentAlarmEditId ? "inline-flex" : "none";
+}
+
+function saveAlarm() {
+  commitAlarmDateText();
   const title = (
     document.getElementById("alarm-title").value || ""
   ).trim();
@@ -94,29 +214,45 @@ function addAlarm() {
     alert("Please select a date.");
     return;
   }
-  alarms.push({
-    id: nextAlarmId++,
-    title,
-    date,
-    time,
-    duration: dur,
-    itemId: currentAlarmItemId,
-  });
-  currentAlarmItemId = null;
-  document.getElementById("alarm-title").value = "";
+  if (currentAlarmEditId) {
+    const alarm = alarms.find((a) => a.id === currentAlarmEditId);
+    if (alarm) {
+      alarm.title = title;
+      alarm.date = date;
+      alarm.time = time;
+      alarm.duration = dur;
+      alarm.itemId = currentAlarmItemId;
+    }
+  } else {
+    alarms.push({
+      id: nextAlarmId++,
+      title,
+      date,
+      time,
+      duration: dur,
+      itemId: currentAlarmItemId,
+    });
+  }
+  resetAlarmEditor(true);
   renderAlarmPanel();
   render();
 }
 
 function deleteAlarm(id) {
   alarms = alarms.filter((a) => a.id !== id);
+  if (currentAlarmEditId === id) resetAlarmEditor(true);
   renderAlarmPanel();
   render();
+}
+
+function deleteCurrentAlarm() {
+  if (currentAlarmEditId !== null) deleteAlarm(currentAlarmEditId);
 }
 
 function renderAlarmPanel() {
   const list = document.getElementById("alarm-list");
   if (!list) return;
+  syncAlarmEditorState();
   if (alarms.length === 0) {
     list.innerHTML =
       '<p style="color:#94a3b8;font-size:13px;text-align:center;padding:12px 0;">No alarms yet.</p>';
@@ -124,10 +260,10 @@ function renderAlarmPanel() {
   }
   list.innerHTML = alarms
     .map((a) => {
-      const absWeek = getAlarmAbsWeek(a);
+      const displayWeekLabel = getAlarmDisplayWeekLabel(a);
       const wkLabel =
-        absWeek > 0
-          ? '<span class="alarm-week-badge">W' + absWeek + "</span>"
+        displayWeekLabel
+          ? '<span class="alarm-week-badge">' + displayWeekLabel + "</span>"
           : "";
 
       let itemName = "";
@@ -140,14 +276,14 @@ function renderAlarmPanel() {
             ")</span>";
       }
       return (
-        '<div class="alarm-item">' +
+        '<div class="alarm-item' + (currentAlarmEditId === a.id ? " active" : "") + '" onclick="openAlarmEditor(' + a.id + ')">' +
         '<div style="min-width:0;">' +
         '<div style="font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' +
         a.title +
         itemName +
         "</div>" +
         '<div style="font-size:11px;color:#64748b;margin-top:2px;">' +
-        a.date +
+        formatAlarmDisplayDate(a.date) +
         "&nbsp;&nbsp;" +
         a.time +
         "&nbsp;&nbsp;" +
@@ -155,7 +291,7 @@ function renderAlarmPanel() {
         "&nbsp;min</div>" +
         wkLabel +
         "</div>" +
-        '<button class="alarm-del-btn" onclick="deleteAlarm(' +
+        '<button class="alarm-del-btn" onclick="event.stopPropagation(); deleteAlarm(' +
         a.id +
         ')" title="Delete alarm">×</button>' +
         "</div>"

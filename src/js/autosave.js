@@ -14,6 +14,7 @@ const _IDB_NAME = "diaglo_planner";
 const _IDB_STORE = "handles";
 const _IDB_KEY = "masterCSV";
 const _EDITOR_NAME_KEY = "diaglo_planner_editor_name";
+const _AUTO_MASTER_FILENAME = "planner_master.csv";
 
 let _autoSaveTimer = null;
 let _masterFileHandle = null;
@@ -22,6 +23,7 @@ let _hasEditLock = false;
 let _isReadOnlyMaster = false;
 let _editorLockInfo = null;
 let _editorIdentity = "";
+let _autoLoadedMasterName = "";
 let _editorSessionId =
   "editor_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
 
@@ -168,6 +170,44 @@ async function _readMasterSnapshot(handle) {
     text,
     lockInfo: _parseEditorLockFromText(text),
   };
+}
+
+async function _tryFetchText(url) {
+  if (typeof fetch === "function") {
+    try {
+      const res = await fetch(url, { cache: "no-store" });
+      if (res && res.ok) return await res.text();
+    } catch (e) {}
+  }
+
+  if (typeof XMLHttpRequest !== "undefined") {
+    return new Promise((resolve) => {
+      try {
+        const req = new XMLHttpRequest();
+        req.open("GET", url, true);
+        req.onload = () => {
+          if ((req.status >= 200 && req.status < 300) || req.status === 0) resolve(req.responseText || "");
+          else resolve("");
+        };
+        req.onerror = () => resolve("");
+        req.send();
+      } catch (e) {
+        resolve("");
+      }
+    });
+  }
+
+  return "";
+}
+
+async function _tryAutoLoadBundledMaster() {
+  if (_masterFileHandle || _plannerHasContent()) return false;
+  const text = await _tryFetchText(_AUTO_MASTER_FILENAME);
+  if (!text || !text.trim()) return false;
+  await _importMasterText(text);
+  _autoLoadedMasterName = _AUTO_MASTER_FILENAME;
+  _updateAutoSaveUI();
+  return true;
 }
 
 async function _ensureMasterPermission() {
@@ -469,7 +509,7 @@ function _updateAutoSaveUI() {
 
   if (!statusEl) return;
   if (!_masterFileHandle) {
-    statusEl.textContent = "";
+    statusEl.textContent = _autoLoadedMasterName ? "✓ " + _autoLoadedMasterName : "";
     return;
   }
 
@@ -505,11 +545,13 @@ async function initAutoSave() {
   if (!window.showSaveFilePicker) {
     const btn = document.getElementById("autosave-btn");
     if (btn) btn.style.display = "none";
+    await _tryAutoLoadBundledMaster();
     return;
   }
 
   const handle = await _loadHandle();
   if (!handle) {
+    await _tryAutoLoadBundledMaster();
     _updateAutoSaveUI();
     return;
   }

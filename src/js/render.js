@@ -162,10 +162,29 @@ function _monthColumnToAbsWeek(yearIndex, monthIndex) {
   return getAbsWeekFromYearWeek(yearIndex, 1);
 }
 
+function _getRelativeTimelineX(e, targetEl) {
+  const anchorEl = targetEl || e.currentTarget || e.target;
+  if (
+    anchorEl &&
+    typeof anchorEl.getBoundingClientRect === "function" &&
+    typeof e.clientX === "number"
+  ) {
+    const rect = anchorEl.getBoundingClientRect();
+    let zoomFactor = 1;
+    if (typeof getComputedStyle === "function" && document.body) {
+      zoomFactor = parseFloat(getComputedStyle(document.body).zoom) || 1;
+    } else if (document.body && document.body.style) {
+      zoomFactor = parseFloat(document.body.style.zoom) || 1;
+    }
+    return Math.max(0, (e.clientX - rect.left) / zoomFactor);
+  }
+  return typeof e.offsetX === "number" ? e.offsetX : 0;
+}
+
 // ── Global click handlers for timeline cells ────────────────────
-function handleTlDblClick(e, itemId) {
+function handleTlDblClick(e, targetEl, itemId) {
   if (e.target.closest('.bar, .milestone, .range-bar, .resize-handle')) return;
-  const x = e.offsetX;
+  const x = _getRelativeTimelineX(e, targetEl);
   const { cw, collW, widths, yearWeekCounts, yearDayCounts } = _computeYearLayout();
   let remaining = x, snapW = 1, dayIdx = 0;
   for (let yi = 0; yi < years.length; yi++) {
@@ -190,7 +209,7 @@ function handleTlDblClick(e, itemId) {
 }
 
 function handleTimelineHeaderClick(e) {
-  const x = e.offsetX;
+  const x = _getRelativeTimelineX(e);
   const { cw, collW, widths, yearWeekCounts, yearDayCounts } = _computeYearLayout();
   const { offsets: yearDayOffsets } = getYearDayOffsets();
   let remaining = x;
@@ -217,7 +236,7 @@ function handleTimelineHeaderClick(e) {
 }
 
 function handleTimelineHeaderDblClick(e) {
-  const x = e.offsetX;
+  const x = _getRelativeTimelineX(e);
   const { cw, collW, widths, yearWeekCounts, yearDayCounts } = _computeYearLayout();
   const { offsets: yearDayOffsets } = getYearDayOffsets();
   let remaining = x;
@@ -353,10 +372,14 @@ function render() {
 
   // ── Alarm week map ─────────────────────────────────────────────
   const _alarmWeekMap = new Map();
+  const _alarmExactMap = new Map();
   alarms.forEach(a => {
     const w = getAlarmAbsWeek(a);
     if (!_alarmWeekMap.has(w)) _alarmWeekMap.set(w, []);
     _alarmWeekMap.get(w).push(a);
+    const exactW = getAlarmExactWeek(a);
+    if (!_alarmExactMap.has(exactW)) _alarmExactMap.set(exactW, []);
+    _alarmExactMap.get(exactW).push(a);
   });
 
   // ── Holiday pre-computation ────────────────────────────────────
@@ -462,10 +485,10 @@ function render() {
   const _itemAlarmMap = new Map();
   alarms.forEach(a => {
     if (!_itemAlarmMap.has(a.itemId)) _itemAlarmMap.set(a.itemId, new Map());
-    const wMap = _itemAlarmMap.get(a.itemId);
-    const w = getAlarmAbsWeek(a);
-    if (!wMap.has(w)) wMap.set(w, []);
-    wMap.get(w).push(a);
+    const alarmMap = _itemAlarmMap.get(a.itemId);
+    const exactW = getAlarmExactWeek(a);
+    if (!alarmMap.has(exactW)) alarmMap.set(exactW, []);
+    alarmMap.get(exactW).push(a);
   });
 
   const displayItems = getDisplayItems();
@@ -582,11 +605,13 @@ function render() {
         const isHighlighted = isHighlightActive(absWeek, highlightedWeek);
         const _row3Alarms = _alarmWeekMap.get(absWeek) || [];
         const hasAlarm = _row3Alarms.length > 0;
+        const row3AlarmTitle = _row3Alarms.map(a => a.title + " " + a.time).join(", ").replace(/"/g, '&quot;');
+        const row3AlarmId = hasAlarm ? _row3Alarms[0].id : null;
         html += '<div style="position:absolute; left:' + x3 + 'px; width:' + w3 + 'px; height:100%; cursor:pointer; font-size:11px; font-weight:bold; color:#2563eb; display:flex; align-items:center; justify-content:center; border-right:2px solid #94a3b8; box-sizing:border-box;' +
           (isHighlighted ? 'background:#fef08a;' : '') +
           '" onclick="toggleHighlight(\'W\' + ' + absWeek + ')" ondblclick="openAlarmForWeek(' + absWeek + ')" title="Click to highlight week">W' +
           relW +
-          (hasAlarm ? ' <span title="' + _row3Alarms.map(a => a.title + " " + a.time).join(", ") + '" style="font-size:10px;">🔔</span>' : '') +
+          (hasAlarm ? ' <button onclick="event.stopPropagation(); openAlarmEditor(' + row3AlarmId + ')" title="' + row3AlarmTitle + '" style="font-size:10px; background:none; border:none; cursor:pointer; padding:0; margin-left:2px;">🔔</button>' : '') +
           '</div>';
       }
     }
@@ -628,7 +653,9 @@ function render() {
           const hasAlarm = _wkAlarms.length > 0;
           const isMonthEnd = _monthEndWeekSets[yi].has(relW);
           const _hldBorder = _holidayAbsWeeks.has(absWeek) ? "border-bottom:3px solid #f59e0b;" : "";
-          const label = String(relW) + (hasAlarm ? ' <span style="font-size:9px;">🔔</span>' : '');
+          const weekAlarmTitle = _wkAlarms.map(a => a.title + " " + a.time).join(", ").replace(/"/g, '&quot;');
+          const weekAlarmId = hasAlarm ? _wkAlarms[0].id : null;
+          const label = String(relW) + (hasAlarm ? ' <button onclick="event.stopPropagation(); openAlarmEditor(' + weekAlarmId + ')" title="' + weekAlarmTitle + '" style="font-size:9px; background:none; border:none; cursor:pointer; padding:0; margin-left:2px;">🔔</button>' : '');
           const extraStyle = (isHighlighted ? "background:#fef08a;" : "") + (isMonthEnd ? "border-right:4px solid #94a3b8;" : "border-right:1px solid #e2e8f0;") + _hldBorder;
           html += '<div onclick="toggleHighlight(\'W\' + ' + absWeek + ')" ondblclick="openAlarmForWeek(' + absWeek + ')" title="Click to highlight week" style="position:absolute; left:' + _x4 + 'px; width:' + eff4 + 'px; height:100%; display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:12px; font-weight:600; color:#475569; box-sizing:border-box; ' + extraStyle + '">' + label + '</div>';
           _x4 += eff4;
@@ -639,8 +666,12 @@ function render() {
           const _m = _dayColMeta[absCol - 1];
           const isHighlighted = isHighlightActive(_m.exactWeekValue, highlightedWeek);
           const isHoliday = _holidayDayCols.has(absCol);
+          const _dayAlarms = _alarmExactMap.get(_m.exactWeekValue) || [];
+          const hasAlarm = _dayAlarms.length > 0;
+          const dayAlarmTitle = _dayAlarms.map(a => a.title + " " + a.time).join(", ").replace(/"/g, '&quot;');
+          const dayAlarmId = hasAlarm ? _dayAlarms[0].id : null;
           const borderStyle = _m.isMonthEnd ? "border-right:4px solid #94a3b8;" : _m.isWeekEnd ? "border-right:2px solid #94a3b8;" : "border-right:1px dashed #e2e8f0;";
-          const label = '<div style="display:flex;flex-direction:column;align-items:center;line-height:1.2;"><span>' + _m.letter + '</span><span style="font-size:9px;color:#64748b;">' + _m.dateStr + '</span></div>';
+          const label = '<div style="display:flex;flex-direction:column;align-items:center;line-height:1.2;"><span>' + _m.letter + (hasAlarm ? ' <button onclick="event.stopPropagation(); openAlarmEditor(' + dayAlarmId + ')" title="' + dayAlarmTitle + '" style="font-size:9px; background:none; border:none; cursor:pointer; padding:0; margin-left:2px;">🔔</button>' : '') + '</span><span style="font-size:9px;color:#64748b;">' + _m.dateStr + '</span></div>';
           const extraStyle = (isHighlighted ? "background:#fef08a;" : "") + (isHoliday ? "background-color:#b0bec5;" : "") + borderStyle;
           html += '<div onclick="toggleHighlight(' + _m.exactWeekValue + ')" ondblclick="openAlarmForDate(\'' + _m.fullDateStr + '\')" title="Click to highlight day" style="position:absolute; left:' + _x4 + 'px; width:' + eff4 + 'px; height:100%; display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:12px; font-weight:600; color:#475569; box-sizing:border-box; ' + extraStyle + '">' + label + '</div>';
           _x4 += eff4;
@@ -746,6 +777,7 @@ function render() {
       '<div class="cell comment-cell">' + peerLabel +
       '<input class="comment-input" type="text" value="' + (item.comment || "").replace(/"/g, "&quot;") +
       '" onchange="updateComment(' + item.id + ', this.value)" onclick="handleCommentLinkClick(event)" placeholder="Add comment...">' +
+      getCommentLinksHtml(item.comment || "", true) +
       "</div>";
 
     html +=
@@ -867,15 +899,16 @@ function render() {
     html += "</div>"; // end name-cell
 
     // ── Single timeline-row cell ──────────────────────────────────
-    html += '<div class="cell timeline-row" ondblclick="handleTlDblClick(event,' + item.id + ')" style="position:relative; overflow:visible; height:48px; border-bottom:1px solid var(--border); box-sizing:border-box;">';
+    html += '<div class="cell timeline-row" ondblclick="handleTlDblClick(event,this,' + item.id + ')" style="position:relative; overflow:visible; height:48px; border-bottom:1px solid var(--border); box-sizing:border-box;">';
 
     // ── Alarm indicators ──────────────────────────────────────────
     const itemAlarmsByWeek = _itemAlarmMap.get(item.id);
     if (itemAlarmsByWeek) {
-      itemAlarmsByWeek.forEach((alarmList, w) => {
-        const ax = _wkX(w);
+      itemAlarmsByWeek.forEach((alarmList, exactW) => {
+        const ax = _wkX(exactW);
         const alarmTitles = alarmList.map(a => a.title + " " + a.time).join(", ").replace(/"/g, '&quot;');
-        html += '<span title="' + alarmTitles + '" style="position:absolute; left:' + (ax + 2) + 'px; top:2px; font-size:10px; z-index:11; pointer-events:none;">🔔</span>';
+        const alarmId = alarmList[0].id;
+        html += '<button onclick="event.stopPropagation(); openAlarmEditor(' + alarmId + ')" title="' + alarmTitles + '" style="position:absolute; left:' + (ax + 2) + 'px; top:2px; font-size:10px; z-index:11; background:none; border:none; cursor:pointer; padding:0;">🔔</button>';
       });
     }
 
@@ -1056,7 +1089,7 @@ function render() {
   html += '<div class="row-bg">';
   html += '<div class="cell comment-cell" style="border-bottom:none"></div>';
   html += '<div class="cell name-cell" style="border-bottom:none; color:#cbd5e1; font-style:italic; justify-content:center;" ondragover="rowDragOverBottom(event)" ondragleave="rowDragLeaveBottom(event)" ondrop="rowDrop(event, \'bottom\')"></div>';
-  html += '<div class="cell timeline-row" ondblclick="handleTlDblClick(event,null)" style="border-bottom:none; height:48px; position:relative; overflow:visible;"></div>';
+  html += '<div class="cell timeline-row" ondblclick="handleTlDblClick(event,this,null)" style="border-bottom:none; height:48px; position:relative; overflow:visible;"></div>';
   html += '</div>';
 
   // ── Filter menus ───────────────────────────────────────────────
@@ -1259,14 +1292,15 @@ function render() {
       const block = document.getElementById("block-" + item.id);
       if (!block) return;
       if (block.style.position !== "absolute") block.style.position = "relative";
+      const milestoneAnchorClass = item.type === "milestone" ? " milestone-link-anchor" : "";
       const isActiveFrom = linkSource && linkSource.itemId === item.id && linkSource.anchor === "start";
       const isActiveTo = linkSource && linkSource.itemId === item.id && linkSource.anchor === "end";
       const startDot = document.createElement("div");
-      startDot.className = "link-anchor start-anchor" + (isActiveFrom ? " active" : "");
+      startDot.className = "link-anchor start-anchor" + milestoneAnchorClass + (isActiveFrom ? " active" : "");
       startDot.title = 'Link: start of "' + item.name + '"';
       startDot.onclick = (e) => { e.stopPropagation(); clickAnchor(item.id, "start"); };
       const endDot = document.createElement("div");
-      endDot.className = "link-anchor end-anchor" + (isActiveTo ? " active" : "");
+      endDot.className = "link-anchor end-anchor" + milestoneAnchorClass + (isActiveTo ? " active" : "");
       endDot.title = 'Link: end of "' + item.name + '"';
       endDot.onclick = (e) => { e.stopPropagation(); clickAnchor(item.id, "end"); };
       block.style.overflow = "visible";
@@ -1299,6 +1333,7 @@ function render() {
           </div>
         </div>
         <textarea class="comment-popup-textarea" oninput="updateBlockCommentText(${item.id}, this.value)" onclick="handleCommentLinkClick(event)" placeholder="Write a comment...">${item.blockComment.text || ""}</textarea>
+        ${getCommentLinksHtml(item.blockComment.text || "", false)}
         <div class="comment-resizer" onmousedown="startCommentResize(event, ${item.id})"></div>
       `;
       gridEl.appendChild(popup);
