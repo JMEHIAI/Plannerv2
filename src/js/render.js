@@ -4,6 +4,12 @@
 
 const gridEl = document.getElementById("grid");
 
+function syncStickyColumnResizers() {
+  const container = document.querySelector(".planner-container");
+  if (!gridEl || !container) return;
+  gridEl.style.setProperty("--sticky-scroll-left", container.scrollLeft + "px");
+}
+
 // Month names constant (never changes, no need to recreate every render)
 const _MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -19,11 +25,100 @@ let _dayColMetaCacheKey = "";
 let _cachedHeaderHeights = null;
 let _cachedHeaderZoom = null;
 
+// Closure reference to the most recent drawBgCanvas function (captures render() scope)
+let _drawCanvas = null;
+
+// Redraw the background canvas (grid lines + today line) without touching the DOM.
+// Safe to call during today-bar drag — uses the state from the last full render().
+function redrawBgCanvas() {
+  if (_drawCanvas) _drawCanvas();
+}
+
 // Shared empty Map sentinel — avoids allocating a new Map() on every cache miss
 const _emptyMap = new Map();
 
 // Most-recent day-column metadata (exposed for click handlers)
 let _currentDayColMeta = null;
+
+// Today line — absolute week position (with day fraction), null = auto from system date
+let _todayLineWeek = null;
+let _todayLineVisible = true;
+
+function _getSystemTodayWeek() {
+  const now = new Date();
+  const yr = String(now.getFullYear());
+  const yi = years.indexOf(yr);
+  if (yi === -1) return null;
+  // ISO week: find Monday of ISO week 1
+  const jan4 = new Date(now.getFullYear(), 0, 4);
+  const soy = new Date(jan4.getTime());
+  soy.setDate(jan4.getDate() - (jan4.getDay() || 7) + 1);
+  const diffMs = now.getTime() - soy.getTime();
+  const diffDays = Math.floor(diffMs / 86400000);
+  const isoWeek = Math.floor(diffDays / 7) + 1;
+  const dayOfWeek = now.getDay(); // 0=Sun,1=Mon..5=Fri,6=Sat
+  // Map to fraction: Mon=0, Tue=0.2, Wed=0.4, Thu=0.6, Fri=0.8
+  // Weekend days clamp to Friday
+  const dayFrac = dayOfWeek === 0 ? 0.8 : dayOfWeek === 6 ? 0.8 : (dayOfWeek - 1) * 0.2;
+  const absWeek = getAbsWeekFromYearWeek(yi, Math.min(isoWeek, getIsoWeeksInYear(yr)));
+  return absWeek + dayFrac;
+}
+
+function getTodayLineWeek() {
+  if (_todayLineWeek !== null) return _todayLineWeek;
+  return _getSystemTodayWeek();
+}
+
+function setTodayLineWeek(wk) {
+  _todayLineWeek = wk;
+}
+
+function resetTodayLine() {
+  _todayLineWeek = null;
+  render();
+}
+
+function toggleTodayLine() {
+  _todayLineVisible = !_todayLineVisible;
+  render();
+}
+
+function getTodayLineTimelineX() {
+  const todayWk = getTodayLineWeek();
+  if (todayWk === null) return null;
+
+  const { cw, collW, offsets } = _computeYearLayout();
+  const wholeWeek = Math.max(1, Math.floor(todayWk));
+  const info = getYearWeekInfo(wholeWeek);
+  const yi = info.yearIndex;
+  if (yi < 0) return null;
+
+  if (hiddenYears.has(yi)) {
+    return offsets[yi] + collW / 2;
+  }
+
+  if (zoomMode === "months") {
+    let weekCursor = 1;
+    for (let y = 0; y < years.length; y++) {
+      const spans = getMonthWeekSpans(years[y]);
+      for (let m = 0; m < 12; m++) {
+        const spanWeeks = spans[m].weeks;
+        if (todayWk >= weekCursor && todayWk < weekCursor + spanWeeks) {
+          return (y * 12 + m + (todayWk - weekCursor) / spanWeeks) * cw;
+        }
+        weekCursor += spanWeeks;
+      }
+    }
+    return years.length * 12 * cw;
+  }
+
+  if (zoomMode === "days") {
+    const dayOffset = Math.max(0, Math.min(4.999, (todayWk - wholeWeek) * 5));
+    return offsets[yi] + ((info.relWeek - 1) * 5 + dayOffset) * cw + cw / 2;
+  }
+
+  return offsets[yi] + (info.relWeek - 1 + (todayWk - wholeWeek)) * cw;
+}
 
 function getDisplayItems() {
   const rawList = [];
@@ -47,6 +142,16 @@ function getDisplayItems() {
     }
     if (filters.type.length > 0) {
       if (filters.type.includes(item.type)) return true;
+    }
+    // Custom column filters
+    var colFilterKeys = Object.keys(columnFilters);
+    for (var cf = 0; cf < colFilterKeys.length; cf++) {
+      var cfId = colFilterKeys[cf];
+      var cfVals = columnFilters[cfId];
+      if (cfVals && cfVals.length > 0) {
+        var cellVal = (item.customData && item.customData[cfId]) || "";
+        if (cfVals.includes(cellVal)) return true;
+      }
     }
     return false;
   }
@@ -137,12 +242,13 @@ function computeEffectiveDuration(startWeek, duration, itemAssignees) {
 // ── Year layout helper (used by render and click handlers) ──────
 function _computeYearLayout() {
   const cw = zoomMode === "days" ? 20 : zoomMode === "months" ? 80 : 28;
-  const collW = 2;
+  const collW = 24; // fixed narrow width for any collapsed year
   const yearWeekCounts = years.map((yearLabel) => getIsoWeeksInYear(yearLabel));
   const yearDayCounts = yearWeekCounts.map((count) => count * 5);
   const widths = years.map((_, yi) => {
+    if (hiddenYears.has(yi)) return collW;
     const cols = zoomMode === "days" ? yearDayCounts[yi] : zoomMode === "months" ? 12 : yearWeekCounts[yi];
-    return hiddenYears.has(yi) ? cols * collW : cols * cw;
+    return cols * cw;
   });
   const offsets = [];
   let acc = 0;
@@ -190,15 +296,15 @@ function handleTlDblClick(e, targetEl, itemId) {
   for (let yi = 0; yi < years.length; yi++) {
     const yw = widths[yi];
     if (remaining <= yw || yi === years.length - 1) {
-      const effCw = hiddenYears.has(yi) ? collW : cw;
+      if (hiddenYears.has(yi)) return; // collapsed year — ignore click
       if (zoomMode === "days") {
-        const col = Math.max(0, Math.min(Math.floor(remaining / effCw), yearDayCounts[yi] - 1));
+        const col = Math.max(0, Math.min(Math.floor(remaining / cw), yearDayCounts[yi] - 1));
         snapW = getAbsWeekFromYearWeek(yi, Math.floor(col / 5) + 1);
         dayIdx = col % 5;
       } else if (zoomMode === "weeks") {
-        snapW = getAbsWeekFromYearWeek(yi, Math.max(0, Math.min(Math.floor(remaining / effCw), yearWeekCounts[yi] - 1)) + 1);
+        snapW = getAbsWeekFromYearWeek(yi, Math.max(0, Math.min(Math.floor(remaining / cw), yearWeekCounts[yi] - 1)) + 1);
       } else {
-        const monthIndex = Math.max(0, Math.min(Math.floor(remaining / effCw), 11));
+        const monthIndex = Math.max(0, Math.min(Math.floor(remaining / cw), 11));
         snapW = _monthColumnToAbsWeek(yi, monthIndex);
       }
       break;
@@ -206,6 +312,12 @@ function handleTlDblClick(e, targetEl, itemId) {
     remaining -= yw;
   }
   openAlarmForWeek(snapW, itemId, dayIdx);
+}
+
+function handleTimelineRowClick(e, itemId) {
+  if (typeof _suppressRowHighlightUntil !== "undefined" && Date.now() < _suppressRowHighlightUntil) return;
+  if (e.target.closest('.bar, .milestone, .range-bar, .resize-handle, button, input, select, textarea, a')) return;
+  toggleRowHighlight(itemId);
 }
 
 function handleTimelineHeaderClick(e) {
@@ -216,17 +328,17 @@ function handleTimelineHeaderClick(e) {
   for (let yi = 0; yi < years.length; yi++) {
     const yw = widths[yi];
     if (remaining <= yw || yi === years.length - 1) {
-      const effCw = hiddenYears.has(yi) ? collW : cw;
+      if (hiddenYears.has(yi)) return; // collapsed year — ignore click
       if (zoomMode === "days") {
-        const col = Math.max(0, Math.min(Math.floor(remaining / effCw), yearDayCounts[yi] - 1));
+        const col = Math.max(0, Math.min(Math.floor(remaining / cw), yearDayCounts[yi] - 1));
         const w = getAbsWeekFromYearWeek(yi, Math.floor(col / 5) + 1);
         const dayFrac = (col % 5) * 0.2;
         toggleHighlight(dayFrac > 0 ? parseFloat((w + dayFrac).toFixed(1)) : "W" + w);
       } else if (zoomMode === "weeks") {
-        const w = getAbsWeekFromYearWeek(yi, Math.max(0, Math.min(Math.floor(remaining / effCw), yearWeekCounts[yi] - 1)) + 1);
+        const w = getAbsWeekFromYearWeek(yi, Math.max(0, Math.min(Math.floor(remaining / cw), yearWeekCounts[yi] - 1)) + 1);
         toggleHighlight("W" + w);
       } else {
-        const c = yi * 12 + Math.max(0, Math.floor(remaining / effCw)) + 1;
+        const c = yi * 12 + Math.max(0, Math.floor(remaining / cw)) + 1;
         toggleHighlight(c);
       }
       return;
@@ -243,15 +355,15 @@ function handleTimelineHeaderDblClick(e) {
   for (let yi = 0; yi < years.length; yi++) {
     const yw = widths[yi];
     if (remaining <= yw || yi === years.length - 1) {
-      const effCw = hiddenYears.has(yi) ? collW : cw;
+      if (hiddenYears.has(yi)) return; // collapsed year — ignore dblclick
       if (zoomMode === "days" && _currentDayColMeta) {
-        const col = Math.max(0, Math.min(Math.floor(remaining / effCw), yearDayCounts[yi] - 1));
+        const col = Math.max(0, Math.min(Math.floor(remaining / cw), yearDayCounts[yi] - 1));
         const metaIdx = yearDayOffsets[yi] + col;
         if (_currentDayColMeta[metaIdx]) openAlarmForDate(_currentDayColMeta[metaIdx].fullDateStr);
       } else {
         const w = zoomMode === "months"
-          ? _monthColumnToAbsWeek(yi, Math.max(0, Math.min(Math.floor(remaining / effCw), 11)))
-          : getAbsWeekFromYearWeek(yi, Math.max(0, Math.min(Math.floor(remaining / effCw), yearWeekCounts[yi] - 1)) + 1);
+          ? _monthColumnToAbsWeek(yi, Math.max(0, Math.min(Math.floor(remaining / cw), 11)))
+          : getAbsWeekFromYearWeek(yi, Math.max(0, Math.min(Math.floor(remaining / cw), yearWeekCounts[yi] - 1)) + 1);
         openAlarmForWeek(w);
       }
       return;
@@ -328,21 +440,27 @@ function render() {
   gridEl.style.setProperty("--comment-width", actualCommentWidth);
   gridEl.style.setProperty("--name-width", actualNameWidth);
 
+  // Custom columns layout
+  const visibleCols = customColumns.filter(function (c) { return c.visible; });
+  var ccTotalW = 0;
+  visibleCols.forEach(function (c) { ccTotalW += c.width; });
+  gridEl.style.setProperty("--custom-cols-width", ccTotalW + "px");
+
   if (!showComments) gridEl.classList.add("hide-comments");
   else gridEl.classList.remove("hide-comments");
 
   // ── Year layout ────────────────────────────────────────────────
   const totalYears = years.length;
   const cellW = zoomMode === "days" ? 20 : zoomMode === "months" ? 80 : 28;
-  const collapsedCellW = 2;
   const { offsets: yearWeekOffsets, totalWeeks } = getYearWeekOffsets();
   const { offsets: yearDayOffsets, totalDays } = getYearDayOffsets();
   const yearWeekCounts = years.map((yearLabel) => getIsoWeeksInYear(yearLabel));
   const yearDayCounts = yearWeekCounts.map((count) => count * 5);
 
+  const collapsedYearW = 24; // fixed narrow width for any collapsed year
   const yearWidths = years.map((_, yi) =>
     hiddenYears.has(yi)
-      ? (zoomMode === "days" ? yearDayCounts[yi] : zoomMode === "months" ? 12 : yearWeekCounts[yi]) * collapsedCellW
+      ? collapsedYearW
       : (zoomMode === "days" ? yearDayCounts[yi] : zoomMode === "months" ? 12 : yearWeekCounts[yi]) * cellW
   );
   const yearOffsets = [];
@@ -350,9 +468,11 @@ function render() {
   yearWidths.forEach(w => { yearOffsets.push(_tlAcc); _tlAcc += w; });
   const totalTimelineW = _tlAcc;
 
-  // 3-column grid: comment | name | single wide timeline column
-  gridEl.style.gridTemplateColumns =
-    "var(--comment-width) var(--name-width) " + totalTimelineW + "px";
+  // Dynamic grid: comment | [custom cols...] | name | timeline
+  var gridColDef = "var(--comment-width) ";
+  visibleCols.forEach(function (c) { gridColDef += c.width + "px "; });
+  gridColDef += "var(--name-width) " + totalTimelineW + "px";
+  gridEl.style.gridTemplateColumns = gridColDef;
 
   // ── Month spans cache ──────────────────────────────────────────
   const _cacheKey = years.join(",");
@@ -516,14 +636,20 @@ function render() {
     const info = getYearWeekInfo(baseW);
     const yi = info.yearIndex;
     const relW = info.relWeek - 1; // 0-based week within year
-    const eff = hiddenYears.has(yi) ? collapsedCellW : cellW;
+    if (hiddenYears.has(yi)) {
+      // Map proportionally into the fixed collapsed year width
+      const totalCols = zoomMode === "days" ? yearDayCounts[yi] : yearWeekCounts[yi];
+      const dayI = zoomMode === "days" ? Math.max(0, Math.min(4.999, (sw - Math.floor(sw)) * 5)) : 0;
+      const col = zoomMode === "days" ? relW * 5 + dayI : relW + (sw - Math.floor(sw));
+      return yearOffsets[yi] + (col / totalCols) * collapsedYearW;
+    }
     if (zoomMode === "days") {
-      const dayI = Math.round((sw - Math.floor(sw)) * 5);
-      return yearOffsets[yi] + (relW * 5 + dayI) * eff;
+      const dayI = Math.max(0, Math.min(4.999, (sw - Math.floor(sw)) * 5));
+      return yearOffsets[yi] + (relW * 5 + dayI) * cellW;
     }
     // weeks mode: fractional offset within column
-    const fracOffset = (sw - Math.floor(sw)) * eff;
-    return yearOffsets[yi] + relW * eff + fracOffset;
+    const fracOffset = (sw - Math.floor(sw)) * cellW;
+    return yearOffsets[yi] + relW * cellW + fracOffset;
   }
 
   // Convert absolute month number (1-based, can be fractional) to px offset
@@ -531,15 +657,36 @@ function render() {
     const absM0 = Math.max(0, mm - 1); // 0-based
     const yi = Math.max(0, Math.min(Math.floor(absM0 / 12), years.length - 1));
     const relM = absM0 - yi * 12; // 0-based within year, can be fractional
-    const eff = hiddenYears.has(yi) ? collapsedCellW : cellW;
-    return yearOffsets[yi] + relM * eff;
+    if (hiddenYears.has(yi)) {
+      return yearOffsets[yi] + (relM / 12) * collapsedYearW;
+    }
+    return yearOffsets[yi] + relM * cellW;
   }
 
   // ── HTML GENERATION ───────────────────────────────────────────
 
+  // Helper: compute sticky left for each visible custom column
+  var _ccBaseLeft = showComments ? commentWidth : 0;
+  function _ccStickyLeft(colIndex) {
+    var left = _ccBaseLeft;
+    for (var i = 0; i < colIndex; i++) left += visibleCols[i].width;
+    return left;
+  }
+
+  // Helper: generate empty custom column cells for header rows
+  function _ccHeaderCells(extraStyle, extraClass) {
+    var h = "";
+    for (var ci = 0; ci < visibleCols.length; ci++) {
+      h += '<div class="cell header-cell custom-col-cell' + (extraClass || "") +
+        '" style="left:' + _ccStickyLeft(ci) + 'px; z-index:28; position:sticky;' + (extraStyle || "") + '"></div>';
+    }
+    return h;
+  }
+
   // ── Header Row 1: Year labels ──────────────────────────────────
   html += '<div class="row-bg header-row-1">';
   html += '<div class="cell header-cell comment-cell" style="border-bottom:none; z-index:30;"></div>';
+  html += _ccHeaderCells("border-bottom:none;");
   html +=
     '<div class="cell header-cell name-cell" style="justify-content:flex-start; align-items:flex-end; padding:0 12px 10px 18px; border-bottom:none; z-index:30;">' +
     '<div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">' +
@@ -562,12 +709,33 @@ function render() {
         '<div style="width:20px; flex-shrink:0;"></div></div>';
     }
   });
+  // Today handle inline in year header row
+  if (_todayLineVisible) {
+    const _todayWkHdr = getTodayLineWeek();
+    if (_todayWkHdr !== null) {
+      const _todayRawX = zoomMode === "months"
+        ? _monthX(mapWeekToMonth(_todayWkHdr))
+        : _wkX(_todayWkHdr);
+      const _todayHdrX = _todayRawX + (zoomMode === "days" ? cellW / 2 : 0);
+      html += '<div id="today-line-handle" onmousedown="_startTodayLineDrag(event)" ondblclick="resetTodayLine()"' +
+        ' title="Drag to move · Double-click to reset to today"' +
+        ' style="position:absolute; left:' + _todayHdrX + 'px; top:0; transform:translateX(-50%);' +
+        ' cursor:ew-resize; z-index:5; display:flex; flex-direction:column; align-items:center;">' +
+        '<div style="background:#ef4444; color:#fff; font-size:12px; font-weight:800;' +
+        ' padding:3px 10px; border-radius:4px; white-space:nowrap; pointer-events:none;' +
+        ' line-height:1.3; letter-spacing:0.5px;">TODAY</div>' +
+        '<div style="width:0; height:0; border-left:6px solid transparent;' +
+        ' border-right:6px solid transparent; border-top:10px solid #ef4444;' +
+        ' pointer-events:none;"></div></div>';
+    }
+  }
   html += '</div></div>';
 
   // ── Header Row 2: Month labels (not in months mode) ────────────
   if (zoomMode !== "months") {
     html += '<div class="row-bg header-row-2">';
     html += '<div class="cell header-cell comment-cell" style="border-bottom:none; z-index:30;"></div>';
+    html += _ccHeaderCells("border-bottom:none;");
     html += '<div class="cell header-cell name-cell" style="border-bottom:none; z-index:30;"></div>';
     html += '<div class="cell header-cell tl-header" style="padding:0; overflow:visible; height:48px;">';
     let _mX2 = 0;
@@ -590,10 +758,11 @@ function render() {
   if (zoomMode === "days") {
     html += '<div class="row-bg header-row-3">';
     html += '<div class="cell header-cell comment-cell" style="border-bottom:none; z-index:30; height:24px;"></div>';
+    html += _ccHeaderCells("border-bottom:none; height:24px;");
     html += '<div class="cell header-cell name-cell" style="border-bottom:none; z-index:30; height:24px;"></div>';
     html += '<div class="cell header-cell tl-header" style="padding:0; overflow:visible; height:24px;">';
     for (let yi = 0; yi < years.length; yi++) {
-      const eff = hiddenYears.has(yi) ? collapsedCellW : cellW;
+      const eff = cellW;
       if (hiddenYears.has(yi)) {
         html += '<div style="position:absolute; left:' + yearOffsets[yi] + 'px; width:' + yearWidths[yi] + 'px; height:100%; background:#e8edf5;"></div>';
         continue;
@@ -622,6 +791,19 @@ function render() {
   html += '<div class="row-bg header-row-4" style="height:56px;">';
   html += '<div class="cell header-cell comment-cell" style="justify-content:flex-start; padding-left:16px; align-items:flex-end; padding-bottom:10px; z-index:30; font-size:13px; font-weight:bold; height:56px;">Comments</div>';
 
+  // Custom column headers with editable name + filter icon
+  for (var _cci = 0; _cci < visibleCols.length; _cci++) {
+    var _cc = visibleCols[_cci];
+    var _ccHasFilter = columnFilters[_cc.id] && columnFilters[_cc.id].length > 0;
+    html += '<div class="cell header-cell custom-col-cell custom-col-header" style="left:' +
+      _ccStickyLeft(_cci) + 'px; z-index:28; position:sticky; height:56px;">' +
+      '<input type="text" value="' + (_cc.name || "").replace(/"/g, "&quot;") +
+      '" onchange="renameCustomColumn(\'' + _cc.id + '\', this.value)" title="Edit column name">' +
+      '<span class="cc-filter-icon' + (_ccHasFilter ? " active" : "") +
+      '" onclick="toggleColFilterMenu(\'' + _cc.id + '\', event)" title="Filter this column">&#9660;</span>' +
+      '</div>';
+  }
+
   // Pre-compute which absolute weeks and months contain holidays
   html +=
     '<div class="cell header-cell name-cell" style="justify-content: space-between; align-items: flex-end; padding-left: 18px; padding-right: 8px; z-index: 30; height: 56px; border-bottom: 2px solid var(--border); box-sizing: border-box;">' +
@@ -637,7 +819,7 @@ function render() {
     let _x4 = 0;
     for (let yi = 0; yi < years.length; yi++) {
       const isHiddenYr = hiddenYears.has(yi);
-      const eff4 = isHiddenYr ? collapsedCellW : cellW;
+      const eff4 = cellW;
 
       if (isHiddenYr) {
         html += '<div style="position:absolute; left:' + _x4 + 'px; width:' + yearWidths[yi] + 'px; height:100%; background:#e8edf5;"></div>';
@@ -707,6 +889,7 @@ function render() {
     const margin = level * 20;
     const children = getChildren(item.id);
     const hasChildren = children.length > 0;
+    const rowHighlightClass = highlightedRowId === item.id ? " row-highlighted" : "";
 
     let computedStartWeek = item.startWeek;
     let computedDuration = item.duration;
@@ -741,7 +924,8 @@ function render() {
           let kEndPx;
           if (k.type === "milestone" && kDur === 0) {
             // End at the diamond center (half a cell past start)
-            const kEff = hiddenYears.has(getYearWeekInfo(Math.max(1, Math.floor(k.startWeek))).yearIndex) ? collapsedCellW : cellW;
+            const _kYi = getYearWeekInfo(Math.max(1, Math.floor(k.startWeek))).yearIndex;
+            const kEff = hiddenYears.has(_kYi) ? collapsedYearW / (zoomMode === "days" ? yearDayCounts[_kYi] : zoomMode === "months" ? 12 : yearWeekCounts[_kYi]) : cellW;
             kEndPx = kStartPx + kEff / 2;
             kDur = 0.5; // week-space approximation for label/duration display
           } else {
@@ -764,7 +948,7 @@ function render() {
       }
     }
 
-    html += '<div class="row-bg">';
+    html += '<div class="row-bg' + (selectedIds.has(item.id) ? ' row-selected' : '') + '" data-id="' + item.id + '">';
 
     let peerLabel = "";
     if (item._groupPeers && item._groupPeers.length > 0) {
@@ -774,28 +958,50 @@ function render() {
         '">+' + item._groupPeers.map((p) => p.name).join(", ") + "</div>";
     }
     html +=
-      '<div class="cell comment-cell">' + peerLabel +
-      '<input class="comment-input" type="text" value="' + (item.comment || "").replace(/"/g, "&quot;") +
-      '" onchange="updateComment(' + item.id + ', this.value)" onclick="handleCommentLinkClick(event)" placeholder="Add comment...">' +
+      '<div class="cell comment-cell' + rowHighlightClass + '">' + peerLabel +
+      '<input class="comment-input' + (getCommentLinks(item.comment || "").length ? " has-link" : "") +
+      '" type="text" value="' + (item.comment || "").replace(/"/g, "&quot;") +
+      '" onchange="updateComment(' + item.id + ', this.value)" onclick="handleCommentLinkClick(event)" ' +
+      'onfocus="this.classList.remove(\'has-link\')" onblur="updateComment(' + item.id + ', this.value); if(getCommentLinks(this.value).length)this.classList.add(\'has-link\')" ' +
+      'placeholder="Add comment...">' +
+      '<div class="comment-link-wrap" title="Double-click to edit" ondblclick="editCommentLink(this)">' +
       getCommentLinksHtml(item.comment || "", true) +
-      "</div>";
+      '</div></div>';
+
+    // Custom column data cells
+    for (var _dci = 0; _dci < visibleCols.length; _dci++) {
+      var _dc = visibleCols[_dci];
+      var _dcVal = (item.customData && item.customData[_dc.id]) || "";
+      html += '<div class="cell custom-col-cell' + rowHighlightClass +
+        '" style="left:' + _ccStickyLeft(_dci) + 'px;">' +
+        '<input type="text" value="' + _dcVal.replace(/"/g, "&quot;") +
+        '" onchange="updateCustomColumnCell(' + item.id + ', \'' + _dc.id + '\', this.value)"' +
+        ' placeholder="...">' +
+        '</div>';
+    }
 
     html +=
-      '<div class="cell name-cell" ondragover="rowDragOver(event)" ondragleave="rowDragLeave(event)" ondrop="rowDrop(event, ' + item.id + ')">' +
+      '<div class="cell name-cell' + rowHighlightClass + '" ondragover="rowDragOver(event)" ondragleave="rowDragLeave(event)" ondrop="rowDrop(event, ' + item.id + ')">' +
+      '<input type="checkbox" class="row-select-cb" data-id="' + item.id + '"' + (selectedIds.has(item.id) ? ' checked' : '') + ' onclick="toggleItemSelection(' + item.id + ', event)" title="Select row">' +
       '<div style="display: flex; align-items: center; margin-left: ' + margin + 'px; flex-grow: 1; min-width: 0; overflow: hidden; margin-right: 8px;">' +
       '<div class="drag-handle" draggable="true" ondragstart="startRowDrag(event, ' + item.id + ')" title="Drag to reorder ▪ Alt+Drop onto row to nest inside ▪ Ctrl+Drop to make top-level">&#8942;&#8942;</div>';
 
     if (item.type === "task" || item.type === "project" || item.type === "family" || item.type === "milestones-group" || item.type === "milestone") {
       const toggleIcon = item.isExpanded === false ? "&#9654;" : "&#9660;";
       const visibility = hasChildren ? "visible" : "hidden";
-      html += '<button class="toggle-btn" onclick="toggleExpand(' + item.id + ')" style="font-size: 10px; width: 20px; visibility: ' + visibility + ';">' + toggleIcon + "</button>";
+      html += '<button class="toggle-btn" onclick="toggleExpand(' + item.id + ')" style="visibility: ' + visibility + ';">' + toggleIcon + "</button>";
     } else {
-      html += '<div style="width: 24px;"></div>';
+      html += '<div style="width: 32px;"></div>';
     }
+
+    const nameClass =
+      item.type === "family" ? "name-input name-input-family" :
+      item.type === "project" ? "name-input name-input-project" :
+      "name-input";
 
     if (item.type === "project" || item.type === "family") {
       if (item.name === "New Project") {
-        html += '<select class="name-input" onchange="updateProjectName(' + item.id + ', this.value)">';
+        html += '<select class="' + nameClass + '" onchange="updateProjectName(' + item.id + ', this.value)">';
         html += '<option value="New Project" disabled ' + (item.name === "New Project" ? "selected" : "") + ">Select Project Type...</option>";
         ["Child Project", "Brother Project", "Mother Project"].forEach((m) => {
           html += '<option value="' + m + '" ' + (m === item.name ? "selected" : "") + ">" + m + "</option>";
@@ -803,14 +1009,14 @@ function render() {
         html += '<option value="Custom Project">Custom Project...</option>';
         html += "</select>";
       } else {
-        html += '<input class="name-input" type="text" value="' + item.name.replace(/"/g, "&quot;") + '" onchange="updateName(' + item.id + ', this.value)" placeholder="Project name...">';
+        html += '<input class="' + nameClass + '" type="text" value="' + item.name.replace(/"/g, "&quot;") + '" onchange="updateName(' + item.id + ', this.value)" onblur="updateName(' + item.id + ', this.value)" placeholder="Project name...">';
       }
     } else if (item.type === "milestones-group") {
       html += '<span class="name-input" style="font-style:italic;color:#b45309;font-weight:600;cursor:default;">Milestones</span>';
     } else if (item.type === "milestone") {
       const isPredefined = predefinedMilestones.includes(item.name);
       if (isPredefined || item.name === "New Milestone") {
-        html += '<select class="name-input" onchange="updateMilestoneName(' + item.id + ', this.value)">';
+        html += '<select class="' + nameClass + '" onchange="updateMilestoneName(' + item.id + ', this.value)">';
         html += '<option value="New Milestone" disabled ' + (item.name === "New Milestone" ? "selected" : "") + ">Select Milestone...</option>";
         predefinedMilestones.forEach((m) => {
           html += '<option value="' + m + '" ' + (m === item.name ? "selected" : "") + ">" + m + "</option>";
@@ -818,22 +1024,42 @@ function render() {
         html += '<option value="Custom Milestone">Custom Milestone...</option>';
         html += "</select>";
       } else {
-        html += '<input class="name-input" type="text" value="' + item.name.replace(/"/g, "&quot;") + '" onchange="updateName(' + item.id + ', this.value)" placeholder="Milestone name...">';
+        html += '<input class="' + nameClass + '" type="text" value="' + item.name.replace(/"/g, "&quot;") + '" onchange="updateName(' + item.id + ', this.value)" onblur="updateName(' + item.id + ', this.value)" placeholder="Milestone name...">';
       }
       const weekDisplay = formatYYWWD(item.startWeek);
       html += '<input type="text" maxlength="6" value="' + weekDisplay + '" onchange="updateMilestoneDate(' + item.id + ', this.value)" title="Type YYWW or YYWW.D" style="width:52px;border:1px solid #cbd5e1;border-radius:4px;padding:2px 4px;font-size:13px;font-family:monospace;color:#92400e;background:#fffbeb;text-align:center;flex-shrink:0;">';
     } else {
       if ((item.name === "New Activity" || item.name === "New Sub-activity" || /^Activity \d+$/.test(item.name)) && customTemplates.length > 0) {
-        html += '<select class="name-input" onchange="applyActivityTemplate(' + item.id + ', this.value)">';
+        html += '<select class="' + nameClass + '" onchange="applyActivityTemplate(' + item.id + ', this.value); if(!(customTemplates.find(t=>t.id===this.value)||{}).askName && !(customTemplates.find(t=>t.id===this.value)||{}).askDuration && !(customTemplates.find(t=>t.id===this.value)||{}).askColor) this.value=\'\';">';
         html += '<option value="" disabled selected>' + item.name + " (Select Template...)</option>";
-        customTemplates.forEach((t) => {
-          const durDays = (t.duration * 5).toFixed(1);
-          html += '<option value="' + t.id + '">' + t.name.replace(/"/g, "&quot;") + " (" + durDays + " days)</option>";
-        });
+        // Group by category using <optgroup>
+        (function() {
+          const allCats = (typeof templateCategories !== "undefined" ? templateCategories : []);
+          const groups = [];
+          allCats.forEach(function(cat) {
+            const catTemplates = customTemplates.filter(function(t) { return t.category === cat.id && !(t.composition && t.composition.length > 0); });
+            if (catTemplates.length) groups.push({ label: cat.name, templates: catTemplates });
+          });
+          const uncategorized = customTemplates.filter(function(t) {
+            return (!(t.composition && t.composition.length > 0)) && (!t.category || !allCats.find(function(c) { return c.id === t.category; }));
+          });
+          const masters = customTemplates.filter(function(t) { return t.composition && t.composition.length > 0; });
+          if (uncategorized.length) groups.push({ label: "General", templates: uncategorized });
+          if (masters.length) groups.push({ label: "Master Templates", templates: masters });
+          groups.forEach(function(g) {
+            html += '<optgroup label="' + g.label.replace(/"/g, "&quot;") + '">';
+            g.templates.forEach(function(t) {
+              const durDays = (t.duration * 5).toFixed(1);
+              const paramHint = (t.askName || t.askDuration || t.askColor) ? " ✦" : "";
+              html += '<option value="' + t.id + '">' + t.name.replace(/"/g, "&quot;") + " (" + durDays + " days)" + paramHint + "</option>";
+            });
+            html += '</optgroup>';
+          });
+        })();
         html += '<option value="Custom Activity">Custom Activity...</option>';
         html += "</select>";
       } else {
-        html += '<input class="name-input" type="text" value="' + item.name.replace(/"/g, "&quot;") + '" onchange="updateName(' + item.id + ', this.value)" placeholder="Activity name...">';
+        html += '<input class="' + nameClass + '" type="text" value="' + item.name.replace(/"/g, "&quot;") + '" onchange="updateName(' + item.id + ', this.value)" onblur="updateName(' + item.id + ', this.value)" placeholder="Activity name...">';
       }
     }
 
@@ -899,7 +1125,7 @@ function render() {
     html += "</div>"; // end name-cell
 
     // ── Single timeline-row cell ──────────────────────────────────
-    html += '<div class="cell timeline-row" ondblclick="handleTlDblClick(event,this,' + item.id + ')" style="position:relative; overflow:visible; height:48px; border-bottom:1px solid var(--border); box-sizing:border-box;">';
+    html += '<div class="cell timeline-row' + rowHighlightClass + '" onclick="handleTimelineRowClick(event,' + item.id + ')" ondblclick="handleTlDblClick(event,this,' + item.id + ')" style="position:relative; overflow:visible; height:48px; border-bottom:1px solid var(--border); box-sizing:border-box;">';
 
     // ── Alarm indicators ──────────────────────────────────────────
     const itemAlarmsByWeek = _itemAlarmMap.get(item.id);
@@ -955,8 +1181,8 @@ function render() {
           '<span style="position:absolute;bottom:1px;right:5px;font-size:8px;font-weight:bold;color:' + bgColor + ';line-height:1;pointer-events:none;text-shadow:0 1px 1px white;">' + parentPct + '%</span>'
           : '';
         html +=
-          '<div id="block-' + item.id + '" class="range-bar" style="position:absolute; left:' + barLeft + 'px; width:' + finalWidth + 'px; top:0; margin-left:0; border-color:' + bgColor + ';" onmousedown="startDrag(event,' + item.id + ')" ondblclick="event.stopPropagation()">' +
-          '<div class="range-label" style="color:' + bgColor + '; display:flex; align-items:center;">' + label + assigneesHtml + "</div>" +
+          '<div id="block-' + item.id + '" class="range-bar' + (selectedIds.has(item.id) ? ' block-selected' : '') + '" draggable="false" ondragstart="return false" style="position:absolute; left:' + barLeft + 'px; width:' + finalWidth + 'px; margin-left:0; border-color:' + bgColor + '; background:' + bgColor + '18;" onmousedown="startDrag(event,' + item.id + ')" ondblclick="event.stopPropagation()">' +
+          '<div class="range-label" style="color:' + bgColor + '; display:flex; align-items:center; justify-content:center; font-weight:700; letter-spacing:0.01em;">' + label + assigneesHtml + "</div>" +
           parentProgressHtml + getCommentIndicator(item) + "</div>";
       } else {
         const completionPct = Math.min(100, Math.max(0, item.completion || 0));
@@ -1002,7 +1228,7 @@ function render() {
         const _isAutoSized = hasChildren && (item.type === "project" || item.type === "family" || item.type === "milestones-group");
 
         html +=
-          '<div id="block-' + item.id + '" class="bar" style="position:absolute; left:' + barLeft + 'px; width:' + finalWidth + 'px; margin-left:0; background-color:' + bgColor + ';" onmousedown="startDrag(event,' + item.id + ')" ondblclick="event.stopPropagation()">' +
+          '<div id="block-' + item.id + '" class="bar' + (selectedIds.has(item.id) ? ' block-selected' : '') + '" draggable="false" ondragstart="return false" style="position:absolute; left:' + barLeft + 'px; width:' + finalWidth + 'px; margin-left:0; background-color:' + bgColor + ';" onmousedown="startDrag(event,' + item.id + ')" ondblclick="event.stopPropagation()">' +
           progressHtml +
           (_isAutoSized ? '' : '<div class="resize-handle left" onmousedown="startResize(event,' + item.id + ",'left')\"></div>") +
           '<div class="bar-label" style="display:flex; align-items:center; overflow:hidden; white-space:nowrap; min-width:0;">' + safeLabel + assigneesHtml + "</div>" +
@@ -1016,7 +1242,8 @@ function render() {
       if (!_parentIsMilestonesGroup) {
         const _msSw = _msWeek(item.startWeek);
         const msXRaw = zoomMode === "months" ? _monthX(mapWeekToMonth(_msSw)) : _wkX(_msSw);
-        const msEff = hiddenYears.has(getYearWeekInfo(item.startWeek).yearIndex) ? collapsedCellW : cellW;
+        const _msYi = getYearWeekInfo(item.startWeek).yearIndex;
+        const msEff = hiddenYears.has(_msYi) ? collapsedYearW / (zoomMode === "months" ? 12 : yearWeekCounts[_msYi]) : cellW;
         const msX = msXRaw + msEff / 2;
         const lineHeight = (totalRows - index + 1) * 48;
         const bgColor = item.color || "#f59e0b";
@@ -1034,7 +1261,7 @@ function render() {
           '<div style="display:flex;flex-direction:column;align-items:center;pointer-events:none;position:relative;z-index:10;">' +
           '<span style="font-size:9px;font-weight:700;color:' + bgColor + ';white-space:nowrap;line-height:1.1;letter-spacing:0.03em;background:rgba(255,255,255,0.88);border-radius:2px;padding:0 2px;">' + shortLabel.replace(/</g, "&lt;") + "</span>" +
           '<span style="font-size:8px;font-weight:600;color:' + bgColor + ';white-space:nowrap;line-height:1;background:rgba(255,255,255,0.88);border-radius:2px;padding:0 2px;margin-top:1px;">' + fmtMsDate(item.startWeek) + "</span>" +
-          '<div id="block-' + item.id + '" class="milestone" style="background-color:' + bgColor + '; pointer-events:auto;" onmousedown="startDrag(event,' + item.id + ')" ondblclick="event.stopPropagation()" title="' + item.name.replace(/"/g, "&quot;") + '">' +
+          '<div id="block-' + item.id + '" class="milestone' + (selectedIds.has(item.id) ? ' block-selected' : '') + '" draggable="false" ondragstart="return false" style="background-color:' + bgColor + '; pointer-events:auto;" onmousedown="startDrag(event,' + item.id + ')" ondblclick="event.stopPropagation()" title="' + item.name.replace(/"/g, "&quot;") + '">' +
           getCommentIndicator(item) + "</div></div></div>";
       }
     }
@@ -1057,7 +1284,8 @@ function render() {
       descMilestones.forEach((ms) => {
         const _msSw2 = _msWeek(ms.startWeek);
         const msXRaw = zoomMode === "months" ? _monthX(mapWeekToMonth(_msSw2)) : _wkX(_msSw2);
-        const msEff = hiddenYears.has(getYearWeekInfo(ms.startWeek).yearIndex) ? collapsedCellW : cellW;
+        const _msYi2 = getYearWeekInfo(ms.startWeek).yearIndex;
+        const msEff = hiddenYears.has(_msYi2) ? collapsedYearW / (zoomMode === "months" ? 12 : yearWeekCounts[_msYi2]) : cellW;
         const msX = msXRaw + msEff / 2;
         const msColor = ms.color || "#f59e0b";
         const msShortLabel = ms.name.replace(/\s*\(.*/, "").trim().toUpperCase();
@@ -1088,46 +1316,79 @@ function render() {
   // ── Bottom drop row ────────────────────────────────────────────
   html += '<div class="row-bg">';
   html += '<div class="cell comment-cell" style="border-bottom:none"></div>';
+  for (var _bci = 0; _bci < visibleCols.length; _bci++) {
+    html += '<div class="cell custom-col-cell" style="border-bottom:none; left:' + _ccStickyLeft(_bci) + 'px;"></div>';
+  }
   html += '<div class="cell name-cell" style="border-bottom:none; color:#cbd5e1; font-style:italic; justify-content:center;" ondragover="rowDragOverBottom(event)" ondragleave="rowDragLeaveBottom(event)" ondrop="rowDrop(event, \'bottom\')"></div>';
   html += '<div class="cell timeline-row" ondblclick="handleTlDblClick(event,this,null)" style="border-bottom:none; height:48px; position:relative; overflow:visible;"></div>';
   html += '</div>';
 
   // ── Filter menus ───────────────────────────────────────────────
   if (activeFilterMenu) {
+    var _isColFilter = activeFilterMenu.indexOf("col_") === 0;
     let menuHtml =
       '<div class="filter-menu open" style="top: ' + filterMenuPosition.top + 'px; left: ' +
       filterMenuPosition.left + 'px;" onclick="event.stopPropagation()">';
-    menuHtml += "<strong>Filter " + (activeFilterMenu === "name" ? "by Name" : "by Type") + "</strong><br><br>";
 
-    if (activeFilterMenu === "type") {
-      ["family", "project", "milestone", "task"].forEach((t) => {
-        const checked = !filters.type.includes(t) ? "checked" : "";
-        const label = t.charAt(0).toUpperCase() + t.slice(1);
-        menuHtml += '<label><input type="checkbox" ' + checked + " onclick=\"handleFilterChange('type', '" + t + "', event)\"> " + label + "</label>";
+    if (_isColFilter) {
+      var _fCol = customColumns.find(function (c) { return c.id === activeFilterMenu; });
+      var _fColName = _fCol ? _fCol.name : "Column";
+      menuHtml += "<strong>Filter: " + _fColName.replace(/</g, "&lt;") + "</strong><br><br>";
+      var _cfVals = columnFilters[activeFilterMenu] || [];
+      var _allColVals = [];
+      items.forEach(function (it) {
+        var v = (it.customData && it.customData[activeFilterMenu]) || "";
+        if (v && _allColVals.indexOf(v) === -1) _allColVals.push(v);
       });
-    } else if (activeFilterMenu === "name") {
-      menuHtml += '<input class="filter-menu-search" type="text" placeholder="Type project or item name" oninput="filterNameFilterOptions(this.value)" onclick="event.stopPropagation()">';
-      const eligibleItems = items.filter((i) => {
-        if (!i.parentId) return true;
-        const parent = items.find((p) => p.id === i.parentId);
-        if (parent && !parent.parentId) return true;
-        return false;
-      });
-      const uniqueNames = [...new Set(eligibleItems.map((i) => (i.name || "").trim()).filter(Boolean))].sort();
-      uniqueNames.slice(0, 50).forEach((n) => {
-        const checked = !filters.name.includes(n) ? "checked" : "";
-        const safeName = n.replace(/'/g, "\\'").replace(/"/g, "&quot;");
-        const searchText = n.toLowerCase().replace(/"/g, "&quot;");
-        menuHtml += '<label class="filter-name-option" data-filter-search="' + searchText + '"><input type="checkbox" ' + checked + " onclick=\"handleFilterChange('name', '" + safeName + "', event)\"> " + n + "</label>";
-      });
-      menuHtml += '<div class="filter-menu-empty" style="display:none;">No matching names</div>';
-      if (uniqueNames.length > 50) menuHtml += '<div style="font-size:10px; color:#64748b; margin-top:4px;">(Showing first 50 results)</div>';
+      _allColVals.sort();
+      if (_allColVals.length === 0) {
+        menuHtml += '<div style="color:#94a3b8; font-size:12px;">No values in this column yet</div>';
+      } else {
+        _allColVals.forEach(function (v) {
+          var checked = _cfVals.indexOf(v) === -1 ? "checked" : "";
+          var safeVal = v.replace(/'/g, "\\'").replace(/"/g, "&quot;");
+          menuHtml += '<label><input type="checkbox" ' + checked +
+            " onclick=\"handleColFilterChange('" + activeFilterMenu.replace(/'/g, "\\'") + "', '" + safeVal + "', event)\"> " +
+            v.replace(/</g, "&lt;") + "</label>";
+        });
+      }
+      menuHtml += '<div class="filter-menu-actions">';
+      menuHtml += '<button class="success" style="padding: 2px 8px; font-size:11px;" onclick="clearColFilter(\'' + activeFilterMenu.replace(/'/g, "\\'") + '\')">Clear All</button>';
+      menuHtml += '<button class="outline" style="padding: 2px 8px; font-size:11px;" onclick="toggleFilterMenu(null, event)">Close</button>';
+      menuHtml += "</div></div>";
+    } else {
+      menuHtml += "<strong>Filter " + (activeFilterMenu === "name" ? "by Name" : "by Type") + "</strong><br><br>";
+
+      if (activeFilterMenu === "type") {
+        ["family", "project", "milestone", "task"].forEach((t) => {
+          const checked = !filters.type.includes(t) ? "checked" : "";
+          const label = t.charAt(0).toUpperCase() + t.slice(1);
+          menuHtml += '<label><input type="checkbox" ' + checked + " onclick=\"handleFilterChange('type', '" + t + "', event)\"> " + label + "</label>";
+        });
+      } else if (activeFilterMenu === "name") {
+        menuHtml += '<input class="filter-menu-search" type="text" placeholder="Type project or item name" oninput="filterNameFilterOptions(this.value)" onclick="event.stopPropagation()">';
+        const eligibleItems = items.filter((i) => {
+          if (!i.parentId) return true;
+          const parent = items.find((p) => p.id === i.parentId);
+          if (parent && !parent.parentId) return true;
+          return false;
+        });
+        const uniqueNames = [...new Set(eligibleItems.map((i) => (i.name || "").trim()).filter(Boolean))].sort();
+        uniqueNames.slice(0, 50).forEach((n) => {
+          const checked = !filters.name.includes(n) ? "checked" : "";
+          const safeName = n.replace(/'/g, "\\'").replace(/"/g, "&quot;");
+          const searchText = n.toLowerCase().replace(/"/g, "&quot;");
+          menuHtml += '<label class="filter-name-option" data-filter-search="' + searchText + '"><input type="checkbox" ' + checked + " onclick=\"handleFilterChange('name', '" + safeName + "', event)\"> " + n + "</label>";
+        });
+        menuHtml += '<div class="filter-menu-empty" style="display:none;">No matching names</div>';
+        if (uniqueNames.length > 50) menuHtml += '<div style="font-size:10px; color:#64748b; margin-top:4px;">(Showing first 50 results)</div>';
+      }
+
+      menuHtml += '<div class="filter-menu-actions">';
+      menuHtml += '<button class="success" style="padding: 2px 8px; font-size:11px;" onclick="clearFilter(\'' + activeFilterMenu + "')\">Clear All</button>";
+      menuHtml += '<button class="outline" style="padding: 2px 8px; font-size:11px;" onclick="toggleFilterMenu(null, event)">Close</button>';
+      menuHtml += "</div></div>";
     }
-
-    menuHtml += '<div class="filter-menu-actions">';
-    menuHtml += '<button class="success" style="padding: 2px 8px; font-size:11px;" onclick="clearFilter(\'' + activeFilterMenu + "')\">Clear All</button>";
-    menuHtml += '<button class="outline" style="padding: 2px 8px; font-size:11px;" onclick="toggleFilterMenu(null, event)">Close</button>';
-    menuHtml += "</div></div>";
     html += menuHtml;
   }
 
@@ -1139,7 +1400,7 @@ function render() {
   }
 
   // ── Draw background grid canvas ───────────────────────────────
-  (function drawBgCanvas() {
+  function drawBgCanvas() {
     // Compute header heights (cached by zoomMode)
     if (_cachedHeaderZoom !== zoomMode || _cachedHeaderHeights === null) {
       const r1 = gridEl.querySelector(".header-row-1 .cell");
@@ -1186,7 +1447,7 @@ function render() {
     let _bgX = 0;
     for (let yi = 0; yi < years.length; yi++) {
       const isHiddenYr = hiddenYears.has(yi);
-      const eff = isHiddenYr ? collapsedCellW : cellW;
+      const eff = cellW;
       const yearColCount = zoomMode === "weeks" ? yearWeekCounts[yi] : zoomMode === "days" ? yearDayCounts[yi] : 12;
 
       if (isHiddenYr) {
@@ -1270,7 +1531,32 @@ function render() {
       ctx.lineTo(totalTimelineW, y);
       ctx.stroke();
     }
-  })();
+
+    // ── Today line on canvas ──────────────────────────────────────
+    if (_todayLineVisible) {
+      const todayWk = getTodayLineWeek();
+      if (todayWk !== null) {
+        // Center the line in the middle of the current cell
+        const rawX = zoomMode === "months"
+          ? _monthX(mapWeekToMonth(todayWk))
+          : _wkX(todayWk);
+        const todayX = rawX + (zoomMode === "days" ? cellW / 2 : 0);
+        // Red vertical line
+        ctx.save();
+        ctx.strokeStyle = "#ef4444";
+        ctx.lineWidth = 2.5;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(todayX, 0);
+        ctx.lineTo(todayX, bgH);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+  }
+  drawBgCanvas();
+  _drawCanvas = drawBgCanvas;
+  syncStickyColumnResizers();
 
   // ── Inject col-resizers ────────────────────────────────────────
   if (showComments) {
@@ -1280,9 +1566,20 @@ function render() {
     commentResizer.addEventListener("mousedown", (e) => startColResize(e, "comment"));
     gridEl.appendChild(commentResizer);
   }
+  // Custom column resizers
+  for (var _cri = 0; _cri < visibleCols.length; _cri++) {
+    (function(ci, col) {
+      var resizerLeft = _ccStickyLeft(ci) + col.width - 2;
+      var resizer = document.createElement("div");
+      resizer.className = "col-resizer";
+      resizer.style.left = resizerLeft + "px";
+      resizer.addEventListener("mousedown", function(e) { startColResize(e, "customcol_" + col.id); });
+      gridEl.appendChild(resizer);
+    })(_cri, visibleCols[_cri]);
+  }
   const nameResizer = document.createElement("div");
   nameResizer.className = "col-resizer";
-  nameResizer.style.left = "calc(var(--comment-width) + var(--name-width) - 2px)";
+  nameResizer.style.left = "calc(var(--comment-width) + var(--custom-cols-width, 0px) + var(--name-width) - 2px)";
   nameResizer.addEventListener("mousedown", (e) => startColResize(e, "name"));
   gridEl.appendChild(nameResizer);
 

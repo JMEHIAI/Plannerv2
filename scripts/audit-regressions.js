@@ -271,6 +271,8 @@ items = [
 assertEqual(h.run("getLastItemEndWeek()"), 83, "New top-level items start after the furthest work, not the last row");
 
 h.run(`
+_getSystemTodayWeek = function() { return 67.4; };
+years = ["2025", "2026"];
 items = [
   { id: 10, type: "project", name: "Parent", startWeek: 1, duration: 2 },
   { id: 11, type: "task", name: "Child Late", parentId: 10, startWeek: 20, duration: 1 },
@@ -279,7 +281,19 @@ items = [
 nextId = 100;
 `);
 h.run("addSubTask(10);");
-assertEqual(h.run("items.find(i => i.id === 100).startWeek"), 21, "New child items append after the latest sibling end");
+assertEqual(h.run("items.find(i => i.id === 100).startWeek"), 68, "New child items prefer the current Monday when it is inside the visible timeline");
+
+h.run(`
+_getSystemTodayWeek = function() { return null; };
+items = [
+  { id: 10, type: "project", name: "Parent", startWeek: 1, duration: 2 },
+  { id: 11, type: "task", name: "Child Late", parentId: 10, startWeek: 20, duration: 1 },
+  { id: 12, type: "task", name: "Child Early", parentId: 10, startWeek: 5, duration: 1 }
+];
+nextId = 101;
+`);
+h.run("addSubTask(10);");
+assertEqual(h.run("items.find(i => i.id === 101).startWeek"), 21, "New child items still append after the latest sibling end when no current-day preference is available");
 
 h.run(`
 years = ["2025"];
@@ -453,6 +467,21 @@ assertEqual(h.run('document.getElementById("alarm-date-text").value'), "03/08/20
 h.run(`years = ["2025"];`);
 assertEqual(h.run("getAlarmExactWeek({ date: '2025-01-07' })"), 2.2, "Tuesday alarms map to the Tuesday column within their ISO week");
 h.run(`
+years = ["2026"];
+items = [
+  { id: 1, type: "milestone", name: "M", startWeek: 1, duration: 0 },
+  { id: 2, type: "task", name: "T", startWeek: 2, duration: 1 }
+];
+links = [];
+_undoStack = [];
+`);
+h.run(`updateMilestoneDate(1, "2554");`);
+assertEqual(
+  h.run("({ years: years.slice(), starts: items.map(i => i.startWeek), undo: _undoStack.length })"),
+  { years: ["2026"], starts: [1, 2], undo: 0 },
+  "Rejected milestone dates do not mutate the timeline or create undo entries",
+);
+h.run(`
 alarms = [{ id: 11, title: "Review", date: "2025-01-07", time: "10:30", duration: 45, itemId: 7 }];
 items = [{ id: 7, type: "task", name: "Task A", startWeek: 1, duration: 1 }];
 openAlarmEditor(11);
@@ -480,6 +509,9 @@ holidays = [];
 people = [];
 links = [];
 customTemplates = [];
+templateCategories = [];
+customColumns = [];
+columnFilters = {};
 filters = { name: [], type: [] };
 showSettings = false;
 showComments = false;
@@ -488,36 +520,68 @@ nameWidthBase = 350;
 showLinks = true;
 localStorage.setItem("diaglo_planner_editor_name", "QA");
 _masterFileHandle = { name: "planner_master.csv" };
-_hasEditLock = true;
-_editorLockInfo = { sessionId: _editorSessionId, editorName: "QA", acquiredAt: "2026-01-01T00:00:00.000Z" };
+_canWrite = true;
+_changesSinceLastSave = false;
+_lastSavedAt = Date.parse("2026-01-01T12:34:00.000Z");
 `);
 const lockCsv = h.run("generateCSVString({ includeEditorLock: true })");
 h.set("__lockCsv", lockCsv);
 assertOk(
   lockCsv.includes("EditorLock"),
-  "Shared-master CSV writes include an editor-lock row",
-  "Expected EditorLock row in autosave CSV output",
+  "Shared-master CSV writes include a saved-by metadata row",
+  "Expected EditorLock-formatted metadata row in autosave CSV output",
 );
 assertEqual(
-  h.run("(_parseEditorLockFromText(__lockCsv) || {}).editorName"),
+  h.run("(_parseSavedByFromText(__lockCsv) || {}).editorName"),
   "QA",
-  "Editor-lock rows round-trip through CSV parsing",
+  "Saved-by rows round-trip through CSV parsing",
 );
-h.set("fetch", async () => ({
-  ok: true,
-  text: async () => 'Years,2025\nGlobals,weeks,false,false,200,350,,true\nId,Type,Name,StartWeek,Duration,ParentId,IsExpanded,Comment,Color,IsLocked,MilestoneRow,BlockCommentData,AssigneesData,Completion\n1,task,\"Auto\",1,1,,true,\"\",\"#4f46e5\",false,0,\"\",\"\",0',
-}));
-assertOk(
-  fs.readFileSync(path.join(__dirname, "..", "src/js/autosave.js"), "utf8").includes("_tryAutoLoadBundledMaster"),
-  "Bundled master auto-load helper is present",
-  "Expected startup helper for planner_master.csv auto-load",
+h.run("_updateAutoSaveUI();");
+assertEqual(
+  h.run('document.getElementById("autosave-label").textContent'),
+  "Auto-save",
+  "Auto-save UI labels the shared-file workflow correctly when a master file is active",
 );
 assertOk(
-  fs.readFileSync(path.join(__dirname, "..", "src/js/autosave.js"), "utf8").includes("await _tryAutoLoadBundledMaster();"),
-  "Init path attempts bundled master auto-load when no handle is stored",
-  "Expected initAutoSave to try planner_master.csv auto-load",
+  h.run('document.getElementById("autosave-status").textContent.includes("Saved")'),
+  "Auto-save status shows a saved indicator for the active master file",
+  "Expected saved status text after updating the auto-save UI",
 );
-h.run("_hasEditLock = false; _masterFileHandle = null; clearTimeout(markChanged._debounce); _stopTimer();");
+
+h.run(`
+years = ["2025"];
+items = [{ id: 1, type: "task", name: "Existing", startWeek: 1, duration: 1 }];
+people = [];
+alarms = [];
+holidays = [];
+links = [];
+customTemplates = [];
+templateCategories = [];
+customColumns = [];
+columnFilters = {};
+nextId = 10;
+nextPersonId = 1;
+nextAlarmId = 1;
+nextLinkId = 1;
+`);
+h.set("__mergeCsvText", [
+  'Years,2025',
+  'TemplateCategory,"cat_old","Ops"',
+  'Template,"Merge Base",1,"#335577","","cat_old",true,false,false,"tpl_old"',
+  'Template,"Merge Master",2,"[{""templateId"":""tpl_old"",""quantity"":2}]","cat_old",false,true,false,"tpl_master_old"',
+  'CustomCol,"col_old","Risk",160,true',
+  'Id,Type,Name,StartWeek,Duration,ParentId,IsExpanded,Comment,Color,IsLocked,MilestoneRow,BlockCommentData,AssigneesData,Completion,CustomData',
+  '5,task,"Merged",3,2,,true,"","#123456",false,0,"","",75,"{""col_old"":""High""}"',
+].join("\n"));
+h.set("__mergeEvent", { target: { files: [{ name: "merge.csv", __text: h.run("__mergeCsvText") }], value: "x" } });
+h.run("mergeCSV(__mergeEvent);");
+assertEqual(
+  h.run('({ completion: items.find(i => i.name === "Merged").completion, customData: items.find(i => i.name === "Merged").customData, customColumns: customColumns.map(c => c.name), templateCount: customTemplates.length, categoryCount: templateCategories.length })'),
+  { completion: 75, customData: { col_old: "High" }, customColumns: ["Risk"], templateCount: 2, categoryCount: 1 },
+  "CSV merge preserves completion, custom column data, templates, and template categories",
+);
+
+h.run('_masterFileHandle = null; clearTimeout(markChanged._debounce); _stopTimers();');
 
 const failed = results.filter((result) => !result.ok);
 results.forEach((result) => {

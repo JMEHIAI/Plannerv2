@@ -2,6 +2,218 @@
 //  CSV EXPORT / IMPORT / MERGE
 // ═══════════════════════════════════════════════════════════════
 
+function _csvQuote(value) {
+  return '"' + String(value == null ? "" : value).replace(/"/g, '""') + '"';
+}
+
+function _csvJson(value) {
+  if (value == null) return '""';
+  if (Array.isArray(value) && value.length === 0) return '""';
+  if (
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 0
+  ) {
+    return '""';
+  }
+  return _csvQuote(JSON.stringify(value));
+}
+
+function _parseCsvJson(value) {
+  if (!value || value === '""') return undefined;
+  try {
+    return JSON.parse(value);
+  } catch (e) {
+    return undefined;
+  }
+}
+
+function _newTemplateCategoryId() {
+  return "cat_" + Date.now() + "_" + Math.floor(Math.random() * 1000000);
+}
+
+function _newImportedTemplateId(prefix) {
+  return prefix + Date.now() + "_" + Math.floor(Math.random() * 1000000);
+}
+
+function _parseTemplateCategoryRow(values) {
+  if (values.length >= 3) {
+    return {
+      id: values[1] || "",
+      name: values[2] || "",
+    };
+  }
+  return {
+    id: "",
+    name: values[1] || "",
+  };
+}
+
+function _parseTemplateRow(values) {
+  const composition = _parseCsvJson(values[4]);
+  return {
+    oldId: values[9] || "",
+    name: values[1] || "",
+    duration: parseFloat(values[2]) || 0,
+    color: values[3] || "#4f46e5",
+    composition: Array.isArray(composition) ? composition : null,
+    rawCategoryId: values[5] || "",
+    askName: values[6] === "true",
+    askDuration: values[7] === "true",
+    askColor: values[8] === "true",
+  };
+}
+
+function _mergeTemplateCategoriesFromCsv(rows) {
+  const categoryIdMap = {};
+  rows.forEach(function (row) {
+    const name = (row.name || "").trim();
+    if (!name) return;
+
+    let existing = null;
+    if (row.id) {
+      existing = templateCategories.find(function (cat) {
+        return cat.id === row.id;
+      });
+    }
+    if (!existing) {
+      existing = templateCategories.find(function (cat) {
+        return (cat.name || "").toLowerCase() === name.toLowerCase();
+      });
+    }
+    if (!existing) {
+      let newId = row.id || _newTemplateCategoryId();
+      if (templateCategories.some(function (cat) { return cat.id === newId; })) {
+        newId = _newTemplateCategoryId();
+      }
+      existing = { id: newId, name: name };
+      templateCategories.push(existing);
+    }
+    if (row.id) categoryIdMap[row.id] = existing.id;
+  });
+  return categoryIdMap;
+}
+
+function _mergeTemplatesFromCsv(rows, categoryIdMap) {
+  const templateIdMap = {};
+  const pendingComposition = [];
+
+  rows.forEach(function (row) {
+    const name = (row.name || "").trim();
+    if (!name) return;
+
+    const resolvedCategoryId = row.rawCategoryId
+      ? (categoryIdMap[row.rawCategoryId] ||
+        (templateCategories.find(function (cat) { return cat.id === row.rawCategoryId; }) || {}).id ||
+        null)
+      : null;
+
+    let template = customTemplates.find(function (t) {
+      return (t.name || "").toLowerCase() === name.toLowerCase();
+    });
+    let shouldApplyComposition = false;
+
+    if (!template) {
+      template = {
+        id: _newImportedTemplateId(row.composition && row.composition.length > 0 ? "t_m_" : "t_"),
+        name: name,
+        duration: row.duration,
+        color: row.color,
+      };
+      if (resolvedCategoryId) template.category = resolvedCategoryId;
+      if (row.askName) template.askName = true;
+      if (row.askDuration) template.askDuration = true;
+      if (row.askColor) template.askColor = true;
+      if (row.composition && row.composition.length > 0) {
+        template.composition = JSON.parse(JSON.stringify(row.composition));
+        shouldApplyComposition = true;
+      }
+      customTemplates.push(template);
+    } else {
+      if (resolvedCategoryId && !template.category) template.category = resolvedCategoryId;
+      if (row.askName) template.askName = true;
+      if (row.askDuration) template.askDuration = true;
+      if (row.askColor) template.askColor = true;
+      if ((!template.color || template.color === "#4f46e5") && row.color) template.color = row.color;
+      if ((!template.duration || template.duration <= 0) && row.duration > 0) template.duration = row.duration;
+      if (
+        row.composition &&
+        row.composition.length > 0 &&
+        (!template.composition || template.composition.length === 0)
+      ) {
+        template.composition = JSON.parse(JSON.stringify(row.composition));
+        shouldApplyComposition = true;
+      }
+    }
+
+    if (row.oldId) templateIdMap[row.oldId] = template.id;
+    if (shouldApplyComposition) {
+      pendingComposition.push({
+        template: template,
+        composition: row.composition,
+      });
+    }
+  });
+
+  pendingComposition.forEach(function (entry) {
+    if (!entry.composition || entry.composition.length === 0) return;
+    entry.template.composition = entry.composition.map(function (part) {
+      return {
+        templateId: templateIdMap[part.templateId] || part.templateId,
+        quantity: part.quantity,
+      };
+    });
+  });
+}
+
+function _parseCustomColumnRow(values) {
+  return {
+    id: values[1] || "",
+    name: values[2] || "Column",
+    width: parseInt(values[3], 10) || 150,
+    visible: values[4] !== "false",
+  };
+}
+
+function _newCustomColumnId() {
+  const id = "col_" + Date.now() + "_" + nextColId;
+  nextColId++;
+  return id;
+}
+
+function _mergeCustomColumnsFromCsv(rows) {
+  const columnIdMap = {};
+  rows.forEach(function (row) {
+    const name = (row.name || "Column").trim() || "Column";
+    let existing = null;
+    if (row.id) {
+      existing = customColumns.find(function (col) {
+        return col.id === row.id && (col.name || "") === name;
+      });
+    }
+    if (!existing) {
+      existing = customColumns.find(function (col) {
+        return (col.name || "").toLowerCase() === name.toLowerCase();
+      });
+    }
+    if (!existing) {
+      let newId = row.id || _newCustomColumnId();
+      if (customColumns.some(function (col) { return col.id === newId; })) {
+        newId = _newCustomColumnId();
+      }
+      existing = {
+        id: newId,
+        name: name,
+        width: row.width || 150,
+        visible: row.visible !== false,
+      };
+      customColumns.push(existing);
+    }
+    if (row.id) columnIdMap[row.id] = existing.id;
+  });
+  return columnIdMap;
+}
+
 /** Build and return the full CSV string for the current planner state. */
 function generateCSVString(options) {
   options = options || {};
@@ -22,9 +234,9 @@ function generateCSVString(options) {
     "," +
     showLinks,
   );
-  if (options.includeEditorLock && typeof _buildEditorLockCSVLine === "function") {
-    const lockLine = _buildEditorLockCSVLine();
-    if (lockLine) csv.push(lockLine);
+  if (options.includeEditorLock && typeof _buildSavedByCSVLine === "function") {
+    const savedByLine = _buildSavedByCSVLine();
+    if (savedByLine) csv.push(savedByLine);
   }
   csv.push(
     "FiltersName," +
@@ -38,19 +250,35 @@ function generateCSVString(options) {
       .map((n) => '"' + n.replace(/"/g, '""') + '"')
       .join(","),
   );
-  customTemplates.forEach((t) => {
-    const safeComposition = t.composition
-      ? '"' + JSON.stringify(t.composition).replace(/"/g, '""') + '"'
-      : '""';
+  templateCategories.forEach(function (cat) {
     csv.push(
-      'Template,"' +
-      t.name.replace(/"/g, '""') +
-      '",' +
+      "TemplateCategory," +
+      _csvQuote(cat.id || "") +
+      "," +
+      _csvQuote(cat.name || ""),
+    );
+  });
+  customTemplates.forEach((t) => {
+    const safeComposition = _csvJson(t.composition);
+    csv.push(
+      "Template," +
+      _csvQuote(t.name) +
+      "," +
       t.duration +
-      ',"' +
-      t.color +
-      '",' +
-      safeComposition,
+      "," +
+      _csvQuote(t.color || "") +
+      "," +
+      safeComposition +
+      "," +
+      _csvQuote(t.category || "") +
+      "," +
+      (t.askName === true) +
+      "," +
+      (t.askDuration === true) +
+      "," +
+      (t.askColor === true) +
+      "," +
+      _csvQuote(t.id || ""),
     );
   });
   alarms.forEach((a) => {
@@ -95,8 +323,32 @@ function generateCSVString(options) {
     );
   });
 
+  // Custom columns definitions
+  customColumns.forEach((col) => {
+    csv.push(
+      "CustomCol," +
+      '"' + col.id.replace(/"/g, '""') + '",' +
+      '"' + col.name.replace(/"/g, '""') + '",' +
+      col.width + "," +
+      col.visible,
+    );
+  });
+
+  // Column filters
+  var colFilterKeys = Object.keys(columnFilters);
+  colFilterKeys.forEach(function (colId) {
+    var vals = columnFilters[colId];
+    if (vals && vals.length > 0) {
+      csv.push(
+        "ColFilter," +
+        '"' + colId.replace(/"/g, '""') + '",' +
+        vals.map(function (v) { return '"' + v.replace(/"/g, '""') + '"'; }).join(","),
+      );
+    }
+  });
+
   csv.push(
-    "Id,Type,Name,StartWeek,Duration,ParentId,IsExpanded,Comment,Color,IsLocked,MilestoneRow,BlockCommentData,AssigneesData,Completion",
+    "Id,Type,Name,StartWeek,Duration,ParentId,IsExpanded,Comment,Color,IsLocked,MilestoneRow,BlockCommentData,AssigneesData,Completion,CustomData",
   );
   items.forEach((item) => {
     const safeName = '"' + item.name.replace(/"/g, '""') + '"';
@@ -109,6 +361,9 @@ function generateCSVString(options) {
       item.assignees && item.assignees.length > 0
         ? '"' + item.assignees.join(";") + '"'
         : '""';
+    const customDataStr = item.customData && Object.keys(item.customData).length > 0
+      ? '"' + JSON.stringify(item.customData).replace(/"/g, '""') + '"'
+      : '""';
     csv.push(
       item.id +
       "," +
@@ -136,7 +391,9 @@ function generateCSVString(options) {
       "," +
       assigneesStr +
       "," +
-      (item.completion || 0),
+      (item.completion || 0) +
+      "," +
+      customDataStr,
     );
   });
 
@@ -218,6 +475,10 @@ function _importCSVText(text) {
     const newPeople = [];
     const newHolidays = [];
     const newLinks = [];
+    const importedTemplateCategories = [];
+    const importedTemplates = [];
+    const newCustomColumns = [];
+    const newColumnFilters = {};
     let tempId = 1;
     let tempAlarmId = 1;
     let tempPersonId = 1;
@@ -260,31 +521,12 @@ function _importCSVText(text) {
         filters.type = values.slice(1).filter((v) => v !== "");
         continue;
       }
+      if (values[0] === "TemplateCategory") {
+        importedTemplateCategories.push(_parseTemplateCategoryRow(values));
+        continue;
+      }
       if (values[0] === "Template") {
-        const tName = values[1];
-        const tDur = parseFloat(values[2]);
-        const tColor = values[3] || "#4f46e5";
-        let tComp = null;
-        if (values[4] && values[4] !== "") {
-          try {
-            tComp = JSON.parse(values[4]);
-          } catch (e) { }
-        }
-        // Only add if it doesn't already exist locally
-        if (
-          !customTemplates.some(
-            (t) => t.name.toLowerCase() === tName.toLowerCase(),
-          )
-        ) {
-          const newT = {
-            id: "t_" + Date.now() + Math.random(),
-            name: tName,
-            duration: tDur,
-            color: tColor,
-          };
-          if (tComp) newT.composition = tComp;
-          customTemplates.push(newT);
-        }
+        importedTemplates.push(_parseTemplateRow(values));
         continue;
       }
       if (values[0] === "EditorLock") {
@@ -334,6 +576,16 @@ function _importCSVText(text) {
         });
         continue;
       }
+      if (values[0] === "CustomCol") {
+        newCustomColumns.push(_parseCustomColumnRow(values));
+        continue;
+      }
+      if (values[0] === "ColFilter") {
+        var cfId = values[1];
+        var cfVals = values.slice(2).filter(function (v) { return v !== ""; });
+        if (cfVals.length > 0) newColumnFilters[cfId] = cfVals;
+        continue;
+      }
 
       if (values[0] === "Id" || values[0] === "Type") continue;
 
@@ -360,6 +612,14 @@ function _importCSVText(text) {
           } catch (e) {
             blockCommentData = undefined;
           }
+          let customDataParsed;
+          try {
+            customDataParsed = values[14] && values[14] !== '""' && values[14] !== ''
+              ? JSON.parse(values[14])
+              : undefined;
+          } catch (e) {
+            customDataParsed = undefined;
+          }
           newItems.push({
             id: parsedId,
             type: values[1],
@@ -381,6 +641,7 @@ function _importCSVText(text) {
                 ? values[12].split(";")
                 : [],
             completion: values[13] ? parseInt(values[13]) : 0,
+            customData: customDataParsed,
           });
           if (parsedId >= tempId) tempId = parsedId + 1;
         }
@@ -393,6 +654,8 @@ function _importCSVText(text) {
       people = newPeople;
       holidays = newHolidays;
       links = newLinks;
+      const templateCategoryIdMap = _mergeTemplateCategoriesFromCsv(importedTemplateCategories);
+      _mergeTemplatesFromCsv(importedTemplates, templateCategoryIdMap);
       nextLinkId =
         newLinks.length > 0
           ? Math.max(...newLinks.map((l) => l.id)) + 1
@@ -400,6 +663,15 @@ function _importCSVText(text) {
       nextId = tempId;
       nextAlarmId = tempAlarmId;
       nextPersonId = tempPersonId;
+      if (newCustomColumns.length > 0) {
+        customColumns = newCustomColumns;
+        nextColId = newCustomColumns.length + 1;
+      }
+      columnFilters = newColumnFilters;
+      if (typeof _saveCategoriesLocal === "function") _saveCategoriesLocal();
+      if (typeof saveTemplatesLocal === "function") saveTemplatesLocal();
+      if (typeof _syncCategoryDropdowns === "function") _syncCategoryDropdowns();
+      if (typeof renderTemplatesList === "function") renderTemplatesList();
       render();
       if (typeof markChanged === 'function') markChanged();
     } else {
@@ -431,6 +703,9 @@ function mergeCSV(e) {
     let startLine = 0;
     const incomingAlarms = [];
     const incomingLinks = [];
+    const incomingTemplateCategories = [];
+    const incomingTemplates = [];
+    const incomingCustomColumns = [];
     const oldToNewPersonIds = {};
     while (
       startLine < lines.length &&
@@ -452,22 +727,12 @@ function mergeCSV(e) {
           oldToId: parseInt(v[4]),
           toAnchor: v[5],
         });
+      } else if (v[0] === "TemplateCategory") {
+        incomingTemplateCategories.push(_parseTemplateCategoryRow(v));
       } else if (v[0] === "Template") {
-        const tName = v[1];
-        const tDur = parseFloat(v[2]);
-        const tColor = v[3] || "#4f46e5";
-        if (
-          !customTemplates.some(
-            (t) => t.name.toLowerCase() === tName.toLowerCase(),
-          )
-        ) {
-          customTemplates.push({
-            id: "t_" + Date.now() + Math.random(),
-            name: tName,
-            duration: tDur,
-            color: tColor,
-          });
-        }
+        incomingTemplates.push(_parseTemplateRow(v));
+      } else if (v[0] === "CustomCol") {
+        incomingCustomColumns.push(_parseCustomColumnRow(v));
       } else if (v[0] === "Holiday") {
         const _mhDate = v[1];
         const _mhPeople = v[2] ? v[2].split("|").filter(Boolean) : [];
@@ -486,6 +751,10 @@ function mergeCSV(e) {
       startLine++;
     }
     startLine++; // skip Id,Type,Name,... header
+
+    const templateCategoryIdMap = _mergeTemplateCategoriesFromCsv(incomingTemplateCategories);
+    _mergeTemplatesFromCsv(incomingTemplates, templateCategoryIdMap);
+    const customColIdMap = _mergeCustomColumnsFromCsv(incomingCustomColumns);
 
     // First pass: build old-id → new-id map
     const idMap = {};
@@ -523,6 +792,17 @@ function mergeCSV(e) {
       } catch (e) {
         blockCommentData = undefined;
       }
+      let customDataParsed = _parseCsvJson(v[14]);
+      if (customDataParsed && typeof customDataParsed === "object") {
+        const remappedCustomData = {};
+        Object.keys(customDataParsed).forEach(function (oldKey) {
+          const newKey = customColIdMap[oldKey] || oldKey;
+          remappedCustomData[newKey] = customDataParsed[oldKey];
+        });
+        customDataParsed = remappedCustomData;
+      } else {
+        customDataParsed = undefined;
+      }
 
       newItems.push({
         id: idMap[oldId],
@@ -541,6 +821,8 @@ function mergeCSV(e) {
         milestoneRow: v[10] ? parseInt(v[10]) : 0,
         blockComment: blockCommentData,
         assignees: newAssignees,
+        completion: v[13] ? parseInt(v[13], 10) : 0,
+        customData: customDataParsed,
       });
     }
 
@@ -584,6 +866,10 @@ function mergeCSV(e) {
       });
     });
 
+    if (typeof _saveCategoriesLocal === "function") _saveCategoriesLocal();
+    if (typeof saveTemplatesLocal === "function") saveTemplatesLocal();
+    if (typeof _syncCategoryDropdowns === "function") _syncCategoryDropdowns();
+    if (typeof renderTemplatesList === "function") renderTemplatesList();
     render();
     if (typeof markChanged === 'function') markChanged();
     let msg = "Merged " + newItems.length + " item rows";
@@ -616,57 +902,43 @@ function exportJPEG() {
   if (!container || !grid) return;
 
   loadLib().then(function () {
-    // Save state
-    var origScrollLeft = container.scrollLeft;
-    var origScrollTop = container.scrollTop;
-    var origOverflow = container.style.overflow;
-    var origHeight = container.style.height;
-    var origMaxHeight = container.style.maxHeight;
-    var origFlex = container.style.flex;
-    var origBodyOverflow = document.body.style.overflow;
-    var origBodyHeight = document.body.style.height;
-    var origBodyZoom = document.body.style.zoom;
+    var exportBg = getExportBackground(container);
+    var toolbarBtnIcon = document.getElementById("toggle-toolbars-icon");
 
-    // Hide UI chrome
-    var hideSelectors = [
-      ".settings-btn", ".delete-btn", ".add-sub-btn", ".duplicate-btn",
-      ".lock-btn", ".toggle-btn", ".drag-handle", ".resize-handle",
-      ".controls-group", ".assignee-select", ".icon-btn",
-      ".link-anchor", "#link-svg-overlay", "#link-mode-banner",
-      ".comment-resizer", ".col-resizer"
-    ];
-    var hiddenEls = [];
-    hideSelectors.forEach(function (sel) {
-      document.querySelectorAll(sel).forEach(function (el) {
-        hiddenEls.push({ el: el, orig: el.style.display });
-        el.style.display = "none";
-      });
-    });
-
-    // Expand to full content
-    container.style.overflow = "visible";
-    container.style.height = "auto";
-    container.style.maxHeight = "none";
-    container.style.flex = "none";
-    document.body.style.overflow = "visible";
-    document.body.style.height = "auto";
-    document.body.style.zoom = "1";
-    container.scrollLeft = 0;
-    container.scrollTop = 0;
-    void grid.offsetHeight;
-
-    html2canvas(grid, {
-      scale: 2,
+    html2canvas(document.body, {
+      scale: Math.max(window.devicePixelRatio || 1, 2),
       useCORS: true,
-      backgroundColor: "#ffffff",
-      width: grid.scrollWidth,
-      height: grid.scrollHeight,
-      scrollX: 0,
-      scrollY: 0,
-      windowWidth: grid.scrollWidth,
-      windowHeight: grid.scrollHeight,
+      backgroundColor: exportBg,
+      width: window.innerWidth,
+      height: window.innerHeight,
+      windowWidth: window.innerWidth,
+      windowHeight: window.innerHeight,
+      scrollX: window.scrollX,
+      scrollY: window.scrollY,
+      onclone: function (clonedDoc) {
+        clonedDoc.documentElement.style.backgroundColor = exportBg;
+        clonedDoc.body.style.backgroundColor = exportBg;
+        clonedDoc.body.style.zoom = "1";
+        clonedDoc.body.style.transform = "scale(0.75)";
+        clonedDoc.body.style.transformOrigin = "top left";
+        clonedDoc.body.style.width = "133.3333vw";
+        clonedDoc.body.style.height = "133.3333vh";
+        clonedDoc.querySelectorAll("img").forEach(function (img) {
+          img.style.visibility = "hidden";
+        });
+        var clonedWrapper = clonedDoc.getElementById("toolbars-wrapper");
+        if (clonedWrapper) clonedWrapper.style.display = "none";
+        var clonedBtnText = clonedDoc.getElementById("toggle-toolbars-text");
+        if (clonedBtnText) clonedBtnText.textContent = "Show Buttons";
+        var clonedBtnIcon = clonedDoc.getElementById("toggle-toolbars-icon");
+        if (clonedBtnIcon) clonedBtnIcon.textContent = toolbarBtnIcon ? toolbarBtnIcon.textContent : "👁️";
+        var clonedContainer = clonedDoc.querySelector(".planner-container");
+        if (clonedContainer) {
+          clonedContainer.scrollLeft = container.scrollLeft;
+          clonedContainer.scrollTop = container.scrollTop;
+        }
+      }
     }).then(function (canvas) {
-      restore();
       canvas.toBlob(function (blob) {
         if (!blob) { alert("JPEG export failed."); return; }
         var a = document.createElement("a");
@@ -678,25 +950,20 @@ function exportJPEG() {
         URL.revokeObjectURL(a.href);
       }, "image/jpeg", 0.92);
     }).catch(function (err) {
-      restore();
       console.error("Export error:", err);
       alert("JPEG export failed: " + err.message);
     });
-
-    function restore() {
-      container.style.overflow = origOverflow;
-      container.style.height = origHeight;
-      container.style.maxHeight = origMaxHeight;
-      container.style.flex = origFlex;
-      document.body.style.overflow = origBodyOverflow;
-      document.body.style.height = origBodyHeight;
-      document.body.style.zoom = origBodyZoom;
-      container.scrollLeft = origScrollLeft;
-      container.scrollTop = origScrollTop;
-      hiddenEls.forEach(function (h) { h.el.style.display = h.orig; });
-    }
   }).catch(function (err) {
-    alert("Could not load the export library. Check your internet connection.");
-    console.error(err);
+      alert("Could not load the export library. Check your internet connection.");
+      console.error(err);
   });
+
+  function getExportBackground(el) {
+    var nodes = [el, document.body, document.documentElement];
+    for (var i = 0; i < nodes.length; i++) {
+      var bg = window.getComputedStyle(nodes[i]).backgroundColor;
+      if (bg && bg !== "transparent" && bg !== "rgba(0, 0, 0, 0)") return bg;
+    }
+    return "#ffffff";
+  }
 }

@@ -10,7 +10,9 @@ function pushUndo() {
   _undoStack.push({
     items: JSON.parse(JSON.stringify(items)),
     links: JSON.parse(JSON.stringify(links)),
+    customColumns: JSON.parse(JSON.stringify(customColumns)),
     nextId: nextId,
+    nextColId: nextColId,
   });
   if (_undoStack.length > _UNDO_MAX) _undoStack.shift();
   _updateUndoButton();
@@ -23,7 +25,9 @@ function undo() {
   const snapshot = _undoStack.pop();
   items = snapshot.items;
   links = snapshot.links;
+  if (snapshot.customColumns) customColumns = snapshot.customColumns;
   nextId = snapshot.nextId;
+  if (snapshot.nextColId) nextColId = snapshot.nextColId;
   // Invalidate render caches that depend on data
   _monthSpansCacheKey = ""; // force re-check (years may have changed)
   _dayColMetaCacheKey = "";
@@ -44,6 +48,8 @@ function _updateUndoButton() {
 let items = [];
 let people = [];
 let customTemplates = [];
+// Template shape: { id, name, duration, color, category?, composition?,
+//                   askName?, askDuration?, askColor? }
 
 // Load templates from localStorage on boot
 try {
@@ -51,6 +57,15 @@ try {
   if (saved) customTemplates = JSON.parse(saved);
 } catch (e) {
   console.warn("Could not load templates", e);
+}
+
+// Template categories: [{ id, name }]
+let templateCategories = [];
+try {
+  const savedCats = localStorage.getItem("diaglo_template_categories");
+  if (savedCats) templateCategories = JSON.parse(savedCats);
+} catch (e) {
+  console.warn("Could not load template categories", e);
 }
 
 let nextId = 1;
@@ -63,9 +78,19 @@ let nextAlarmId = 1;
 let currentAlarmItemId = null;
 let currentAlarmEditId = null;
 let highlightedWeek = null;
+let highlightedRowId = null;
 let zoomMode = "weeks";
 let showSettings = false;
 let showComments = false;
+
+// Custom Columns state
+// Each column: { id: "col_<ts>", name: "Header", width: 150, visible: true }
+let customColumns = [];
+let nextColId = 1;
+
+// Multi-select state
+let selectedIds = new Set();   // Set<itemId> of currently selected items
+let _lastSelectedId = null;    // for shift-range selection
 
 // Dependency Links state
 let links = [];
@@ -76,6 +101,8 @@ let linkSource = null;
 let commentWidth = 200;
 let nameWidthBase = 350;
 let filters = { name: [], type: [] };
+// Per-column filters: { "col_1": ["value1", "value2"], ... } — items with matching values are hidden
+let columnFilters = {};
 let activeFilterMenu = null;
 let filterMenuPosition = { top: 0, left: 0 };
 
@@ -382,52 +409,90 @@ function formatYYWWD(absWeek) {
   return yy + wk + (d > 1 ? "." + Math.min(5, d) : "");
 }
 
-function parseYYWWD(str) {
+function _planYYWWD(str) {
   if (!str) return null;
   const parts = str.split(".");
   const yyww = parts[0];
-  const d = parts[1] ? parseInt(parts[1]) : 1;
+  const d = parts[1] ? parseInt(parts[1], 10) : 1;
   if (yyww.length < 3) return null;
+
   const yy = yyww.substring(0, 2);
-  const ww = parseInt(yyww.substring(2));
+  const ww = parseInt(yyww.substring(2), 10);
   if (isNaN(ww) || ww < 1) return null;
 
-  let yrIdx = years.findIndex((y) => y.endsWith(yy));
-
-  // Auto-create missing years if needed
-  if (yrIdx === -1) {
-    const century = parseInt(yy) >= 50 ? 1900 : 2000;
-    const targetYear = century + parseInt(yy);
-    const firstYear = parseInt(years[0]) || 2025;
-    const lastYear = parseInt(years[years.length - 1]) || 2028;
-
-    if (targetYear < firstYear) {
-      // Prepend years and shift all items
-      while (parseInt(years[0]) > targetYear) {
-        const fy = parseInt(years[0]);
-        const newYear = String(fy - 1);
-        years.unshift(newYear);
-        const addedWeeks = getIsoWeeksInYear(newYear);
-        items.forEach(item => { item.startWeek += addedWeeks; });
-      }
-    } else if (targetYear > lastYear) {
-      // Append years
-      while (parseInt(years[years.length - 1]) < targetYear) {
-        const ly = parseInt(years[years.length - 1]);
-        years.push(String(ly + 1));
-      }
-    }
-    if (typeof _updateYearCountLabel === 'function') _updateYearCountLabel();
-    yrIdx = years.findIndex((y) => y.endsWith(yy));
-    if (yrIdx === -1) return null;
-  }
-
-  const weeksInTargetYear = getIsoWeeksInYear(years[yrIdx]);
+  const century = parseInt(yy, 10) >= 50 ? 1900 : 2000;
+  const targetYear = String(century + parseInt(yy, 10));
+  const weeksInTargetYear = getIsoWeeksInYear(targetYear);
   if (ww > weeksInTargetYear) return null;
 
-  const baseWeek = getAbsWeekFromYearWeek(yrIdx, ww);
+  const plannedYears = years.slice();
+  const prependYears = [];
+  const appendYears = [];
+  let shiftWeeks = 0;
+
+  if (!plannedYears.some((y) => y === targetYear)) {
+    const firstYear = parseInt(plannedYears[0], 10) || 2025;
+    const lastYear = parseInt(plannedYears[plannedYears.length - 1], 10) || 2028;
+    const targetYearNum = parseInt(targetYear, 10);
+
+    if (targetYearNum < firstYear) {
+      for (let yr = firstYear - 1; yr >= targetYearNum; yr--) {
+        const newYear = String(yr);
+        prependYears.unshift(newYear);
+        shiftWeeks += getIsoWeeksInYear(newYear);
+      }
+      plannedYears.unshift(...prependYears);
+    } else if (targetYearNum > lastYear) {
+      for (let yr = lastYear + 1; yr <= targetYearNum; yr++) {
+        const newYear = String(yr);
+        appendYears.push(newYear);
+        plannedYears.push(newYear);
+      }
+    } else {
+      return null;
+    }
+  }
+
+  const yrIdx = plannedYears.findIndex((y) => y === targetYear);
+  if (yrIdx === -1) return null;
+
+  let baseWeek = ww;
+  for (let i = 0; i < yrIdx; i++) {
+    baseWeek += getIsoWeeksInYear(plannedYears[i]);
+  }
   const offset = (Math.max(1, Math.min(5, d)) - 1) * 0.2;
-  return baseWeek + offset;
+
+  return {
+    absWeek: baseWeek + offset,
+    prependYears,
+    appendYears,
+    shiftWeeks,
+  };
+}
+
+function _applyYYWWDPlan(plan) {
+  if (!plan) return;
+  if (plan.prependYears && plan.prependYears.length > 0) {
+    years.unshift(...plan.prependYears);
+    items.forEach((item) => {
+      item.startWeek += plan.shiftWeeks;
+    });
+  }
+  if (plan.appendYears && plan.appendYears.length > 0) {
+    years.push(...plan.appendYears);
+  }
+  if (
+    ((plan.prependYears && plan.prependYears.length > 0) ||
+      (plan.appendYears && plan.appendYears.length > 0)) &&
+    typeof _updateYearCountLabel === "function"
+  ) {
+    _updateYearCountLabel();
+  }
+}
+
+function parseYYWWD(str) {
+  const plan = _planYYWWD(str);
+  return plan ? plan.absWeek : null;
 }
 
 function isHighlightActive(cellWeek, highlightVal) {

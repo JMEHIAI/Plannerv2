@@ -49,16 +49,16 @@
     </button>
   </div>
 
-  <!-- Auto-save restore banner (shown when saved data is found on startup) -->
+  <!-- Permission banner (shown when stored file handle needs re-grant) -->
   <div id="autosave-restore-banner" style="
       display: none;
       align-items: center;
       gap: 12px;
       padding: 10px 20px;
-      background: #fffbeb;
-      border-bottom: 1px solid #fcd34d;
+      background: #eff6ff;
+      border-bottom: 1px solid #bfdbfe;
       font-size: 13px;
-      color: #92400e;
+      color: #1e40af;
     ">
   </div>
 
@@ -90,6 +90,15 @@
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
         </svg>
         Comments
+      </button>
+
+      <button id="today-line-btn" class="outline" onclick="scrollToToday()" title="Scroll to today · Right-click to toggle line">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/>
+          <line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+          <line x1="12" y1="14" x2="12" y2="20" stroke="#ef4444" stroke-width="2.5"/>
+        </svg>
+        Today
       </button>
 
       <button id="zoom-toggle-btn" class="outline" onclick="toggleZoom()" title="Toggle Days/Weeks/Months Zoom">
@@ -125,14 +134,14 @@
       <div style="flex-grow: 1"></div>
 
       <!-- AUTO-SAVE -->
-      <button id="autosave-btn" class="outline" onclick="toggleAutoSave()" title="Pick a shared CSV file — one editor at a time, everyone else can load it read-only.">
+      <button id="autosave-btn" class="outline" onclick="toggleAutoSave()" title="Pick the shared planner CSV file to enable auto-save">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
           <polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>
         </svg>
-        <span id="autosave-label">Edit Lock: OFF</span>
+        <span id="autosave-label">Open File</span>
       </button>
-      <span id="autosave-status" style="font-size:11px; color:#64748b; white-space:nowrap; min-width:60px; flex-shrink:0;"></span>
+      <span id="autosave-status" style="font-size:11px; color:#64748b; white-space:nowrap; min-width:80px; flex-shrink:0;"></span>
 
       <div style="width: 1px; height: 24px; background: #cbd5e1; margin: 0 4px; flex-shrink:0;"></div>
 
@@ -204,6 +213,13 @@
           <path d="M12 5v14M5 12h14" />
         </svg>
         Add Activity
+      </button>
+      <button class="outline" onclick="toggleColManager()" style="color: #6366f1; font-weight: 600" title="Add and manage custom columns">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="3" width="7" height="18" rx="1" />
+          <rect x="14" y="3" width="7" height="18" rx="1" />
+        </svg>
+        Columns
       </button>
 
       <div style="width: 1px; height: 24px; background: #cbd5e1; margin: 0 8px"></div>
@@ -359,195 +375,106 @@
     </div>
   </div>
 
-  <!-- Activity Templates Modal -->
-  <div id="templates-modal-overlay" onclick="if (event.target === this) toggleTemplatesModal();" style="
-        display: none;
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background: rgba(15, 23, 42, 0.6);
-        backdrop-filter: blur(4px);
-        z-index: 1000;
-        align-items: center;
-        justify-content: center;
-      ">
-    <div id="templates-modal-content" style="
-          background: white;
-          width: 92%;
-          max-width: 1300px;
-          max-height: 90vh;
-          border-radius: 12px;
-          box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
-          display: flex;
-          flex-direction: column;
-          overflow: hidden;
-        ">
-      <div style="
-            padding: 16px 24px;
-            border-bottom: 1px solid #e2e8f0;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            background: #f8fafc;
-          ">
-        <h2 style="margin: 0; font-size: 20px; color: #0f172a">
-          &#x2699;&#xfe0f; Activity Templates
-        </h2>
-        <button onclick="toggleTemplatesModal()" style="
-              background: none;
-              border: none;
-              font-size: 28px;
-              cursor: pointer;
-              color: #64748b;
-              line-height: 1;
-              padding: 0;
-            ">
-          &times;
-        </button>
+  <!-- Activity Templates Modal — full screen -->
+  <div id="templates-modal-overlay" onclick="if (event.target === this) toggleTemplatesModal();" style="display:none; position:fixed; inset:0; background:rgba(15,23,42,0.65); backdrop-filter:blur(4px); z-index:1000; align-items:stretch; justify-content:stretch;">
+    <div id="templates-modal-content" style="background:white; width:100%; height:100%; display:flex; flex-direction:column; overflow:hidden;">
+
+      <!-- Header -->
+      <div style="padding:20px 32px; border-bottom:2px solid #e2e8f0; display:flex; justify-content:space-between; align-items:center; background:#f8fafc; flex-shrink:0;">
+        <h2 style="margin:0; font-size:26px; font-weight:700; color:#0f172a;">⚙️ Activity Templates</h2>
+        <button onclick="toggleTemplatesModal()" style="background:none; border:none; font-size:36px; cursor:pointer; color:#94a3b8; line-height:1; padding:0 4px;">&times;</button>
       </div>
 
-      <div style="
-            padding: 24px;
-            overflow-y: auto;
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
-          ">
-        <div style="display: flex; gap: 8px">
-          <input type="text" id="new-template-name" placeholder="Activity Name" style="
-                flex-grow: 1;
-                padding: 8px;
-                border: 1px solid #cbd5e1;
-                border-radius: 4px;
-                font-size: 14px;
-              " />
-          <input type="number" id="new-template-duration" placeholder="Days" value="10" min="0.1" step="0.1" style="
-                width: 70px;
-                padding: 8px;
-                border: 1px solid #cbd5e1;
-                border-radius: 4px;
-                font-size: 14px;
-              " title="Duration in days" />
-          <span style="font-size: 12px; color: #64748b; font-weight: 600; margin-left: -4px; align-self: center;">Days</span>
-          <input type="color" id="new-template-color" value="#4f46e5" style="
-                width: 40px;
-                height: 36px;
-                padding: 0;
-                border: 1px solid #cbd5e1;
-                border-radius: 4px;
-                cursor: pointer;
-              " title="Default Color" />
-          <button class="success" onclick="addTemplate()" style="padding: 8px 16px">
-            Add
-          </button>
+      <!-- Body -->
+      <div style="padding:28px 32px; flex:1; display:flex; flex-direction:column; gap:24px; overflow:hidden;">
+
+        <!-- Add Template Form -->
+        <div style="background:#f1f5f9; border:1px solid #e2e8f0; border-radius:12px; padding:20px 24px; flex-shrink:0;">
+          <div style="font-size:15px; font-weight:700; color:#334155; margin-bottom:14px;">➕ New Template</div>
+          <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:14px;">
+            <input type="text" id="new-template-name" placeholder="Activity name"
+              style="flex:1; min-width:200px; padding:11px 14px; border:1.5px solid #cbd5e1; border-radius:8px; font-size:16px;"
+              onkeydown="if(event.key==='Enter') addTemplate()" />
+            <input type="number" id="new-template-duration" placeholder="Days" value="10" min="0.1" step="0.1"
+              style="width:90px; padding:11px 12px; border:1.5px solid #cbd5e1; border-radius:8px; font-size:16px;" title="Duration in days" />
+            <span style="font-size:15px; color:#64748b; font-weight:600; white-space:nowrap;">days</span>
+            <input type="color" id="new-template-color" value="#4f46e5"
+              style="width:48px; height:44px; padding:2px; border:1.5px solid #cbd5e1; border-radius:8px; cursor:pointer;" title="Default color" />
+            <select id="new-template-category"
+              style="padding:11px 12px; border:1.5px solid #cbd5e1; border-radius:8px; font-size:15px; color:#334155; min-width:160px;">
+              <option value="">No category</option>
+            </select>
+            <button class="success" onclick="addTemplate()" style="padding:11px 28px; font-size:16px; font-weight:700; white-space:nowrap; border-radius:8px;">+ Add</button>
+          </div>
+          <div style="display:flex; align-items:center; gap:20px; flex-wrap:wrap;">
+            <span style="font-size:14px; font-weight:600; color:#64748b;">Ask on apply:</span>
+            <label style="display:flex; align-items:center; gap:7px; font-size:15px; cursor:pointer; color:#334155;">
+              <input type="checkbox" id="new-tmpl-ask-name" style="width:17px; height:17px; accent-color:#6366f1;"> Name
+            </label>
+            <label style="display:flex; align-items:center; gap:7px; font-size:15px; cursor:pointer; color:#334155;">
+              <input type="checkbox" id="new-tmpl-ask-duration" style="width:17px; height:17px; accent-color:#6366f1;"> Duration
+            </label>
+            <label style="display:flex; align-items:center; gap:7px; font-size:15px; cursor:pointer; color:#334155;">
+              <input type="checkbox" id="new-tmpl-ask-color" style="width:17px; height:17px; accent-color:#6366f1;"> Color
+            </label>
+            <span style="font-size:13px; color:#94a3b8;">— checked = user customises that field each time</span>
+          </div>
         </div>
 
-        <div style="
-              display: grid;
-              grid-template-columns: 1fr 1fr;
-              gap: 20px;
-              flex: 1;
-              min-height: 500px;
-            ">
-          <!-- Left Col: Saved Templates -->
-          <div style="display: flex; flex-direction: column">
-            <div style="
-                  display: flex;
-                  justify-content: space-between;
-                  align-items: center;
-                  margin-bottom: 12px;
-                ">
-              <h3 style="font-size: 14px; margin: 0; color: #475569">
-                Saved Templates (Drag to Compose)
-              </h3>
-              <input type="text" id="template-search" placeholder="Search templates..." oninput="renderTemplatesList()"
-                style="
-                    padding: 4px 8px;
-                    border: 1px solid #cbd5e1;
-                    border-radius: 4px;
-                    font-size: 12px;
-                    width: 150px;
-                  " />
+        <!-- Two-column list + composer -->
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:24px; flex:1; min-height:0;">
+
+          <!-- Left: Templates list -->
+          <div style="display:flex; flex-direction:column; min-height:0;">
+            <!-- List toolbar -->
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap;">
+              <span style="font-size:17px; font-weight:700; color:#334155; flex:1;">Saved Templates</span>
+              <input type="text" id="template-search" placeholder="Search…" oninput="renderTemplatesList()"
+                style="padding:8px 12px; border:1.5px solid #cbd5e1; border-radius:8px; font-size:14px; width:160px;" />
             </div>
-            <div id="templates-list" style="
-                  border: 1px solid #e2e8f0;
-                  border-radius: 4px;
-                  flex: 1;
-                  overflow-y: auto;
-                  background: #f8fafc;
-                ">
+            <!-- Category add bar -->
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
+              <input type="text" id="new-category-name" placeholder="New folder name…"
+                style="flex:1; padding:9px 12px; border:1.5px solid #c7d2fe; border-radius:8px; font-size:14px;"
+                onkeydown="if(event.key==='Enter') addCategory()" />
+              <button onclick="addCategory()" class="outline"
+                style="padding:9px 16px; font-size:14px; white-space:nowrap; color:#6366f1; border-color:#c7d2fe; font-weight:600; border-radius:8px;">
+                📁 + Folder
+              </button>
+            </div>
+            <!-- Template list -->
+            <div id="templates-list" style="border:1.5px solid #e2e8f0; border-radius:12px; flex:1; overflow-y:auto; background:#f8fafc; min-height:0;">
               <!-- Dynamically populated -->
             </div>
           </div>
 
-          <!-- Right Col: Composer -->
-          <div style="
-                display: flex;
-                flex-direction: column;
-                border: 2px dashed #cbd5e1;
-                border-radius: 8px;
-                background: #fafafa;
-                padding: 12px;
-              " ondragover="allowComposeDrop(event)" ondrop="handleComposeDrop(event)">
-            <h3 style="
-                  font-size: 14px;
-                  margin-top: 0;
-                  margin-bottom: 12px;
-                  color: #475569;
-                ">
-              Template Composer
-            </h3>
-            <div id="composer-list" style="
-                  flex: 1;
-                  overflow-y: auto;
-                  display: flex;
-                  flex-direction: column;
-                  gap: 8px;
-                  margin-bottom: 12px;
-                ">
-              <!-- Populated when dropped -->
-              <div style="
-                    color: #94a3b8;
-                    font-size: 13px;
-                    text-align: center;
-                    margin-top: 40px;
-                    font-style: italic;
-                  ">
+          <!-- Right: Composer -->
+          <div style="display:flex; flex-direction:column; border:2.5px dashed #c7d2fe; border-radius:12px; background:#fafafe; padding:20px; min-height:0;"
+            ondragover="allowComposeDrop(event)" ondrop="handleComposeDrop(event)">
+            <div style="font-size:17px; font-weight:700; color:#334155; margin-bottom:16px;">🔀 Template Composer
+              <span style="font-size:13px; font-weight:400; color:#94a3b8; margin-left:8px;">drag basic templates here to chain them</span>
+            </div>
+            <div id="composer-list" style="flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px; margin-bottom:16px; min-height:0;">
+              <div style="color:#94a3b8; font-size:15px; text-align:center; margin-top:60px; font-style:italic;">
                 Drag &amp; drop saved templates here
               </div>
             </div>
-            <div style="border-top: 1px solid #e2e8f0; padding-top: 12px">
-              <div style="
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    margin-bottom: 8px;
-                  ">
-                <span style="font-size: 13px; font-weight: bold; color: #334155">Total Duration:</span>
-                <span id="composer-total-duration" style="font-size: 14px; font-weight: bold; color: #10b981">0
-                  days</span>
+            <div style="border-top:1.5px solid #e2e8f0; padding-top:16px; flex-shrink:0;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <span style="font-size:15px; font-weight:700; color:#334155;">Total Duration:</span>
+                <span id="composer-total-duration" style="font-size:18px; font-weight:800; color:#10b981;">0 days</span>
               </div>
-              <div style="display: flex; gap: 8px">
-                <input type="text" id="composer-master-name" placeholder="Master Template Name" style="
-                      flex: 1;
-                      padding: 8px;
-                      border: 1px solid #cbd5e1;
-                      border-radius: 4px;
-                      font-size: 14px;
-                    " />
+              <div style="display:flex; gap:10px;">
+                <input type="text" id="composer-master-name" placeholder="Master Template name…"
+                  style="flex:1; padding:11px 14px; border:1.5px solid #cbd5e1; border-radius:8px; font-size:15px;" />
                 <button id="composer-save-new-btn" class="outline" onclick="saveAsNewMasterTemplate()"
-                  style="padding: 8px 16px; display: none">
-                  Save as New
-                </button>
-                <button id="composer-save-btn" class="success" onclick="saveMasterTemplate()" style="padding: 8px 16px">
-                  Save Master
-                </button>
+                  style="padding:11px 18px; font-size:14px; display:none; border-radius:8px;">Save as New</button>
+                <button id="composer-save-btn" class="success" onclick="saveMasterTemplate()"
+                  style="padding:11px 22px; font-size:15px; font-weight:700; border-radius:8px;">Save Master</button>
               </div>
             </div>
           </div>
+
         </div>
       </div>
     </div>
@@ -679,6 +606,9 @@
     </div>
   </div>
 
+  <!-- Column Manager Panel -->
+  <div id="col-manager-panel" onclick="event.stopPropagation()"></div>
+
   <!-- Alarm Panel -->
   <div id="alarm-panel">
     <div style="
@@ -759,6 +689,10 @@
             wheel will scroll sideways.
           </li>
           <li>
+            <strong>Pan by dragging:</strong> Click and drag empty space inside
+            the planner area to pan left/right and up/down quickly.
+          </li>
+          <li>
             <strong>Toggle Zoom (Weeks / Days / Months):</strong> Click the
             <kbd>&#x1f50d; Zoom: Weeks</kbd> button in the top toolbar to cycle
             between three zoom levels &mdash; full <strong>Weeks</strong> (default),
@@ -767,22 +701,51 @@
             <code>1.0</code> week in duration.
           </li>
           <li>
+            <strong>Adjust visible year range:</strong> Use the small
+            <kbd>+</kbd> / <kbd>&minus;</kbd> year controls in the toolbar to add
+            years before or after the current timeline, or remove the last year.
+          </li>
+          <li>
             <strong>Adjust Columns:</strong> Hover your mouse over the
             vertical border line separating the left-side text columns from
             the grid. You can drag these borders left or right from *anywhere*
             vertically along the column!
           </li>
           <li>
-            <strong>Toggle Comments:</strong> Click
-            <kbd>Toggle Comments</kbd> to hide/show the comments section to
-            save horizontal space.
+            <strong>Comments column:</strong> Click the
+            <kbd>Comments</kbd> button to hide or show the left comments column
+            and free up more timeline space.
           </li>
           <li>
-            <strong>Highlight a Week / Today Marker:</strong> Click any
-            <strong>week or day column header</strong> in the timeline grid to
-            highlight that entire column in a distinct color &mdash; useful for
-            marking today or a key deadline. Click the same header again to
-            remove the highlight. The highlighted week is saved with your CSV.
+            <strong>Hide Buttons:</strong> Click
+            <kbd>Hide Buttons</kbd> to collapse the toolbar rows and leave more
+            room for the planner itself. Click it again to bring the controls back.
+          </li>
+          <li>
+            <strong>Highlight a Column:</strong> Click any week/day/month
+            header in the timeline to highlight that whole column. Click the
+            same header again to remove the highlight. The highlighted column
+            is saved with your CSV.
+          </li>
+          <li>
+            <strong>Today Line:</strong> Click the
+            <kbd>&#x1f4cc; Today</kbd> button to jump the planner to the real
+            current date and reset the red line to system today. Right-click
+            that same button to show or hide the red line. You can drag the
+            top <kbd>TODAY</kbd> handle, or drag near the red line in empty
+            timeline space, to reposition it temporarily. Double-click the
+            top handle to reset it back to today.
+          </li>
+          <li>
+            <strong>Highlight a Row:</strong> Click empty space on a row in
+            the timeline area to highlight that full row. Click it again to
+            remove the row highlight.
+          </li>
+          <li>
+            <strong>Custom Columns:</strong> Click
+            <kbd>+ Add Column</kbd> to create extra sticky columns for values
+            such as risk, owner, phase, or status. Their data is saved in CSV,
+            and each custom column can also be filtered.
           </li>
         </ul>
 
@@ -799,17 +762,22 @@
             Brother/Child Projects.
           </li>
           <li>
+            <strong>Add top-level rows:</strong> Use
+            <kbd>Add Project</kbd>, <kbd>Add Milestone</kbd>, or
+            <kbd>Add Activity</kbd> to create new top-level items at the end of
+            the current plan.
+          </li>
+          <li>
             <strong>Add Sub-Items:</strong> Look at the gray buttons next to a
             row's name. Use <kbd>+P</kbd> (Add Project), <kbd>+M</kbd> (Add
             Milestone), or <kbd>+A</kbd> (Add Activity) to nest items *inside*
             that specific row.
           </li>
           <li>
-            <strong>Custom Activity Templates:</strong> Click
-            <kbd>&#x2699;&#xfe0f; Activity Template</kbd> to define reusable tasks (name,
-            duration, color). When adding a new activity in the grid, you can
-            select these templates from the dropdown to instantly apply your
-            predefined settings.
+            <strong>Templates:</strong> Click
+            <kbd>Add Template</kbd> to create reusable activity templates
+            (name, duration, color) and optional master templates made from
+            several activity steps in sequence.
           </li>
           <li>
             <strong>Collapse/Expand:</strong> Click the small triangle (<kbd>&#x25bc;</kbd>
@@ -828,7 +796,7 @@
             templates.
           </li>
           <li>
-            <strong>Assign Team:</strong> Click <kbd>&#x1f465; Assign Team</kbd> in
+            <strong>Assign Team:</strong> Click <kbd>Add Team</kbd> in
             the top toolbar to add people to your roster. Back in the grid,
             click the user icon (<kbd>&#x1f464;</kbd>) under any row's settings gear
             to assign people. Their names will appear directly on the colored
@@ -844,9 +812,22 @@
             <br>&bull; <i>Move to End:</i> Scroll to the very bottom and drop on the placeholder row to move top-level.
           </li>
           <li>
+            <strong>Multi-select Rows:</strong> Use the checkboxes on the far
+            left to select one or more rows. Hold <kbd>Shift</kbd> while
+            clicking another checkbox to select a visible range. When anything
+            is selected, the bottom action bar lets you move, recolor, assign,
+            lock, unlock, or delete the selected rows. Press <kbd>Esc</kbd> to
+            clear the selection.
+          </li>
+          <li>
             <strong>Change Colors:</strong> Click the gear icon (<kbd>&#x2699;</kbd>)
             in the header to reveal the row controls, then click the color
             circle to paint the bar or diamond.
+          </li>
+          <li>
+            <strong>Edit dates directly:</strong> You can also type dates or
+            week values directly in row fields such as milestone week boxes for
+            more precise scheduling.
           </li>
           <li>
             <strong>Duplicate:</strong> Click the green <kbd>D</kbd> button to
@@ -896,6 +877,10 @@
             locked item below it forward or backward in time!
           </li>
           <li>
+            <strong>Global Lock:</strong> Use the toolbar
+            <kbd>Lock: ON/OFF</kbd> button to lock or unlock all items quickly.
+          </li>
+          <li>
             <strong>Isolating a Lock:</strong> Hold the <kbd>CTRL</kbd> key
             while clicking a lock button to explicitly lock or unlock ONLY
             that item, independently of its children. Dragging a locked parent
@@ -915,6 +900,11 @@
             (<kbd>&#x1f4cb;</kbd>) icon to filter strictly by Families, Projects,
             Tasks, or Milestones.
           </li>
+          <li>
+            <strong>Filter by Custom Column:</strong> If you added your own
+            columns, use the small filter control in that column header to hide
+            rows that match selected values.
+          </li>
         </ul>
 
         <h3>6. Add comments</h3>
@@ -930,7 +920,7 @@
             letting you know at a glance where notes are located.
           </li>
           <li>
-            <strong>The Connector:</strong> A dynamic "staring line" (tail)
+            <strong>The Connector:</strong> A dynamic connecting line (tail)
             always points from the comment box to the center of its block, no
             matter how far you drag the popup.
           </li>
@@ -992,22 +982,33 @@
             working-day counts stay accurate. Holidays are saved in your CSV.
           </li>
           <li>
-            <strong>&#x1f514; Alarms:</strong> Click the Alarms button to open the
-            sidebar. You can set date/time reminders tied to specific rows (by
-            double-clicking a grid cell). Click
+            <strong>&#x1f514; Alarms:</strong> Click <kbd>Add Alarm</kbd> to open the
+            sidebar. You can create reminders manually there, double-click a
+            week/day header to create a calendar alarm for that date, or
+            double-click a row timeline cell to create an alarm tied to that
+            item. Click
             <kbd>&#x1f4c5; Export to Outlook (.ics)</kbd> to download them as
             calendar invites.
           </li>
           <li>
-            <strong>Export JPEG:</strong> Takes a clean visual snapshot image
-            of your current screen view.
+            <strong>Shared Master CSV / Auto-save:</strong> Use
+            <kbd>Open File</kbd> to choose a shared master CSV for this browser.
+            After that, the planner can auto-save your edits back to the same
+            file and periodically re-read it for external updates. If write
+            permission is not available, the file opens read-only. This is a
+            shared last-write-wins workflow, not an exclusive edit lock.
+          </li>
+          <li>
+            <strong>Export JPEG:</strong> Captures the current visible planner
+            view as a JPEG, using the on-screen layout and hiding the toolbar
+            button rows in the exported image.
           </li>
           <li>
             <strong>Save to CSV:</strong> Backs up your entire planner into a
             standard spreadsheet file. This perfectly preserves your
             hierarchy, colors, column widths, active filters, custom alarms,
             dependency links, team assignments, completion percentages,
-            holidays, and the current zoom level.
+            holidays, custom columns, templates, and the current zoom level.
           </li>
           <li>
             <strong>Load CSV:</strong> Overwrites your current session with a
@@ -1015,8 +1016,10 @@
           </li>
           <li>
             <strong>Merge CSV:</strong> Loads a selected CSV and carefully
-            appends its items to the bottom of your current planner
-            seamlessly.
+            appends its rows into your current planner without overwriting the
+            existing one. It also merges supported linked data such as alarms,
+            links, templates, template folders, people, holidays, and custom
+            columns where possible.
           </li>
         </ul>
 
@@ -1024,9 +1027,15 @@
         <ul>
           <li>
             <strong>Create Standard Templates:</strong> Click
-            <kbd>&#x2699;&#xfe0f; Activity Template</kbd> to open the modal. Here you can
+            <kbd>Add Template</kbd> to open the modal. Here you can
             define common activities by Name, Duration (Days), and Color. You
             can even use decimals like `0.5` days to represent 4-hour slots!
+          </li>
+          <li>
+            <strong>Folders &amp; Parameterized Templates:</strong> In the same
+            modal you can group templates into folders/categories, and you can
+            mark Name, Duration, and/or Color as <em>Ask on apply</em> so the
+            user customizes those fields each time the template is used.
           </li>
           <li>
             <strong>Create Master Templates:</strong> The Template Modal
@@ -1058,6 +1067,72 @@
         </div>
       </div>
     </div>
+  </div>
+
+  <!-- Template Config Modal — shown when applying a parameterized template -->
+  <div id="tmpl-config-modal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(15,23,42,0.55); backdrop-filter:blur(3px); z-index:11000; align-items:center; justify-content:center;">
+    <div style="background:white; border-radius:14px; padding:28px 28px 22px; width:380px; max-width:94vw; box-shadow:0 24px 48px rgba(0,0,0,0.28);">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+        <h3 id="tcm-title" style="margin:0; font-size:16px; font-weight:700; color:#1e293b;">Configure Template</h3>
+        <button onclick="closeTemplateConfigModal()" style="background:none; border:none; font-size:24px; cursor:pointer; color:#94a3b8; line-height:1; padding:0 2px;">&times;</button>
+      </div>
+      <div id="tcm-name-row" style="display:none; flex-direction:column; gap:5px; margin-bottom:14px;">
+        <label style="font-size:12px; font-weight:600; color:#475569; text-transform:uppercase; letter-spacing:.04em;">Activity Name</label>
+        <input id="tcm-name" type="text" style="padding:8px 10px; border:1px solid #cbd5e1; border-radius:7px; font-size:14px; width:100%; box-sizing:border-box;"
+          onkeydown="if(event.key==='Enter') confirmTemplateConfig()" />
+      </div>
+      <div id="tcm-duration-row" style="display:none; flex-direction:column; gap:5px; margin-bottom:14px;">
+        <label style="font-size:12px; font-weight:600; color:#475569; text-transform:uppercase; letter-spacing:.04em;">Duration (days)</label>
+        <input id="tcm-duration" type="number" min="0.1" step="0.5" style="padding:8px 10px; border:1px solid #cbd5e1; border-radius:7px; font-size:14px; width:140px;"
+          onkeydown="if(event.key==='Enter') confirmTemplateConfig()" />
+      </div>
+      <div id="tcm-color-row" style="display:none; flex-direction:column; gap:5px; margin-bottom:20px;">
+        <label style="font-size:12px; font-weight:600; color:#475569; text-transform:uppercase; letter-spacing:.04em;">Color</label>
+        <input id="tcm-color" type="color" style="width:60px; height:36px; padding:2px; border:1px solid #cbd5e1; border-radius:7px; cursor:pointer;" />
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:4px; border-top:1px solid #f1f5f9; margin-top:4px;">
+        <button onclick="closeTemplateConfigModal()" style="padding:8px 18px; border:1px solid #cbd5e1; border-radius:7px; background:white; cursor:pointer; font-size:13px; color:#475569;">Cancel</button>
+        <button onclick="confirmTemplateConfig()" class="success" style="padding:8px 22px; font-size:13px; font-weight:600;">Apply</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Multi-select action bar (slides up from bottom when items are selected) -->
+  <div id="multiselect-bar">
+    <span id="ms-count" style="font-weight:700;font-size:13px;white-space:nowrap;color:white;"></span>
+    <div class="ms-sep"></div>
+    <div style="display:flex;align-items:center;gap:6px;">
+      <span style="font-size:12px;color:#94a3b8;">Move</span>
+      <input id="ms-move-input" type="number" step="1" value="4" title="Weeks to shift (negative = left)"
+        style="width:58px;padding:4px 6px;border-radius:6px;border:none;font-size:13px;background:#334155;color:white;text-align:center;">
+      <span style="font-size:11px;color:#94a3b8;">wks</span>
+      <button onclick="moveSelected(parseFloat(document.getElementById('ms-move-input').value))"
+        style="padding:4px 10px;background:#3b82f6;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;">Apply</button>
+    </div>
+    <div class="ms-sep"></div>
+    <div style="display:flex;align-items:center;gap:6px;">
+      <span style="font-size:12px;color:#94a3b8;">Color</span>
+      <input id="ms-color-input" type="color" value="#4f46e5"
+        style="width:30px;height:26px;padding:1px;border:none;border-radius:6px;cursor:pointer;background:#334155;">
+      <button onclick="recolorSelected(document.getElementById('ms-color-input').value)"
+        style="padding:4px 10px;background:#6366f1;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;">Apply</button>
+    </div>
+    <div class="ms-sep"></div>
+    <select id="ms-assign-select"
+      onchange="if(this.value){assignSelected(this.value);this.value='';}"
+      style="padding:4px 8px;border-radius:6px;border:none;font-size:12px;background:#334155;color:white;cursor:pointer;max-width:140px;">
+      <option value="">Assign to&hellip;</option>
+    </select>
+    <div class="ms-sep"></div>
+    <button onclick="lockSelected(true)"
+      style="padding:4px 10px;background:#475569;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px;" title="Lock selected">&#x1f512; Lock</button>
+    <button onclick="lockSelected(false)"
+      style="padding:4px 10px;background:#475569;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px;" title="Unlock selected">&#x1f513; Unlock</button>
+    <div class="ms-sep"></div>
+    <button onclick="deleteSelected()"
+      style="padding:4px 10px;background:#ef4444;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;" title="Delete selected">&#x1f5d1; Delete</button>
+    <button onclick="clearSelection()"
+      style="padding:4px 10px;background:transparent;color:#94a3b8;border:1px solid #475569;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700;line-height:1;" title="Clear selection (Esc)">&times;</button>
   </div>
 
   <!-- Link mode banner (bottom of screen when linking is active) -->
@@ -1093,15 +1168,23 @@
   <script src="src/js/autosave.js"></script>
   <script>
     render();
+    scrollToToday(); // center the view on today when the planner first loads
     initAutoSave(); // check for saved data and start timer if previously enabled
     // Ctrl+Z / Cmd+Z → undo
     document.addEventListener("keydown", function(e) {
+      const active = document.activeElement;
+      const inInput = active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.tagName === "SELECT");
       if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
-        const active = document.activeElement;
-        // Don't intercept Ctrl+Z while typing in a text input or textarea
-        if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) return;
+        if (inInput) return;
         e.preventDefault();
         undo();
+      }
+      if (e.key === "Escape" && selectedIds.size > 0) {
+        clearSelection();
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === "a" && !inInput) {
+        e.preventDefault();
+        selectAll();
       }
     });
   </script>

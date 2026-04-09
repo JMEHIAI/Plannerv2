@@ -1,33 +1,34 @@
 // ═══════════════════════════════════════════════════════════════
-//  SHARED MASTER CSV + SINGLE-EDITOR LOCK
+//  SHARED MASTER CSV — last-write-wins, no locks
 //
-//  Goals:
-//    1. Keep the planner browser-only and easy to share.
-//    2. Allow only one active editor at a time.
-//    3. Let everyone else load the latest file in read-only mode.
-//    4. Recover automatically from crashes via stale-lock timeout.
+//  Flow:
+//    1. On load: check IndexedDB for a stored file handle.
+//       If found and permission already granted → auto-load + auto-save silently.
+//       If found but permission expired → show banner to re-grant (one click).
+//       If not found → show banner to pick the file (one click).
+//    2. Everyone edits freely. Changes auto-save 3 s after last edit + every 30 s.
+//    3. Every 60 s the file is re-read; if someone else saved, a toast appears
+//       and content reloads silently.
 // ═══════════════════════════════════════════════════════════════
 
 const _AUTOSAVE_INTERVAL_MS = 30000;
-const _EDITOR_LOCK_TTL_MS = 90000;
-const _IDB_NAME = "diaglo_planner";
-const _IDB_STORE = "handles";
-const _IDB_KEY = "masterCSV";
-const _EDITOR_NAME_KEY = "diaglo_planner_editor_name";
+const _POLL_INTERVAL_MS     = 60000;
+const _IDB_NAME             = "diaglo_planner";
+const _IDB_STORE            = "handles";
+const _IDB_KEY              = "masterCSV";
+const _EDITOR_NAME_KEY      = "diaglo_planner_editor_name";
 const _AUTO_MASTER_FILENAME = "planner_master.csv";
 
-let _autoSaveTimer = null;
+let _autoSaveTimer    = null;
+let _pollTimer        = null;
 let _masterFileHandle = null;
+let _canWrite         = false;
 let _changesSinceLastSave = false;
-let _hasEditLock = false;
-let _isReadOnlyMaster = false;
-let _editorLockInfo = null;
-let _editorIdentity = "";
-let _autoLoadedMasterName = "";
-let _editorSessionId =
-  "editor_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+let _lastSavedAt      = 0;
+let _lastSavedByStr   = "";   // "Name @ HH:MM" from last read
+let _editorName       = "";
 
-// ── IndexedDB helpers ─────────────────────────────────────────
+// ── IndexedDB — persist handle across page loads ──────────────
 
 function _openDB() {
   return new Promise((resolve, reject) => {
@@ -37,17 +38,16 @@ function _openDB() {
     req.onerror = () => reject(req.error);
   });
 }
-
 async function _storeHandle(handle) {
-  const db = await _openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(_IDB_STORE, "readwrite");
-    const req = tx.objectStore(_IDB_STORE).put(handle, _IDB_KEY);
-    req.onsuccess = resolve;
-    req.onerror = () => reject(req.error);
-  });
+  try {
+    const db = await _openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(_IDB_STORE, "readwrite");
+      const req = tx.objectStore(_IDB_STORE).put(handle, _IDB_KEY);
+      req.onsuccess = resolve; req.onerror = () => reject(req.error);
+    });
+  } catch (e) {}
 }
-
 async function _loadHandle() {
   try {
     const db = await _openDB();
@@ -57,11 +57,8 @@ async function _loadHandle() {
       req.onsuccess = () => resolve(req.result || null);
       req.onerror = () => resolve(null);
     });
-  } catch (e) {
-    return null;
-  }
+  } catch (e) { return null; }
 }
-
 async function _clearHandle() {
   try {
     const db = await _openDB();
@@ -73,505 +70,329 @@ async function _clearHandle() {
   } catch (e) {}
 }
 
-// ── Lock helpers ──────────────────────────────────────────────
+// ── Editor name ───────────────────────────────────────────────
 
-function _getEditorIdentity() {
-  if (_editorIdentity) return _editorIdentity;
-  _editorIdentity = (localStorage.getItem(_EDITOR_NAME_KEY) || "").trim();
-  return _editorIdentity;
+function _getEditorName() {
+  if (_editorName) return _editorName;
+  _editorName = (localStorage.getItem(_EDITOR_NAME_KEY) || "").trim();
+  return _editorName;
+}
+function _ensureEditorName() {
+  const n = _getEditorName();
+  if (n) return n;
+  const entered = (window.prompt("Your name or initials (shown when you save):", "") || "").trim();
+  _editorName = entered || "User";
+  localStorage.setItem(_EDITOR_NAME_KEY, _editorName);
+  return _editorName;
 }
 
-function _ensureEditorIdentity() {
-  const existing = _getEditorIdentity();
-  if (existing) return existing;
+// ── "Saved by" metadata embedded in CSV ──────────────────────
+// Re-uses the EditorLock row key for backwards compat — no lock semantics.
 
-  const entered = (window.prompt("Enter your name or initials for the shared edit lock:", "") || "").trim();
-  if (!entered) return null;
-
-  _editorIdentity = entered;
-  localStorage.setItem(_EDITOR_NAME_KEY, entered);
-  return entered;
+function _buildSavedByCSVLine() {
+  const info = { editorName: _getEditorName() || "?", savedAt: new Date().toISOString() };
+  return 'EditorLock,"' + JSON.stringify(info).replace(/"/g, '""') + '"';
 }
-
-function _plannerHasContent() {
-  return (
-    items.length > 0 ||
-    alarms.length > 0 ||
-    people.length > 0 ||
-    holidays.length > 0 ||
-    links.length > 0 ||
-    customTemplates.length > 0
-  );
-}
-
-function _formatLockOwner(lockInfo) {
-  return (lockInfo && lockInfo.editorName) || "another editor";
-}
-
-function _isLockActive(lockInfo) {
-  if (!lockInfo || !lockInfo.sessionId) return false;
-  const expiresAt = Date.parse(lockInfo.expiresAt || lockInfo.heartbeatAt || "");
-  return !isNaN(expiresAt) && expiresAt > Date.now();
-}
-
-function _refreshOwnLockInfo() {
-  const editorName = _getEditorIdentity() || "Unknown";
-  const now = new Date();
-
-  if (!_editorLockInfo || _editorLockInfo.sessionId !== _editorSessionId) {
-    _editorLockInfo = {
-      sessionId: _editorSessionId,
-      editorName,
-      acquiredAt: now.toISOString(),
-    };
-  }
-
-  _editorLockInfo.editorName = editorName;
-  _editorLockInfo.heartbeatAt = now.toISOString();
-  _editorLockInfo.expiresAt = new Date(now.getTime() + _EDITOR_LOCK_TTL_MS).toISOString();
-
-  return _editorLockInfo;
-}
-
-function _buildEditorLockCSVLine() {
-  if (!_hasEditLock) return "";
-  const lockInfo = _refreshOwnLockInfo();
-  return 'EditorLock,"' + JSON.stringify(lockInfo).replace(/"/g, '""') + '"';
-}
-
-function _parseEditorLockFromText(text) {
+function _parseSavedByFromText(text) {
   if (!text) return null;
-  const lines = text.split(String.fromCharCode(10));
-  for (let i = 0; i < lines.length; i++) {
+  const lines = text.split("\n");
+  for (let i = 0; i < Math.min(lines.length, 20); i++) {
     const line = lines[i].trim();
-    if (!line) continue;
     if (line.startsWith("EditorLock")) {
-      const values = _parseCSVLine(line);
-      if (!values[1]) return null;
-      try {
-        return JSON.parse(values[1]);
-      } catch (e) {
-        return null;
-      }
+      try { return JSON.parse(_parseCSVLine(line)[1]); } catch (e) { return null; }
     }
     if (line.startsWith("Id,Type,Name")) break;
   }
   return null;
 }
-
-async function _readMasterText(handle) {
-  const file = await handle.getFile();
-  return file.text();
+function _formatSavedBy(info) {
+  if (!info || !info.editorName) return "";
+  if (!info.savedAt) return info.editorName;
+  const d = new Date(info.savedAt);
+  return info.editorName + " @ " + String(d.getHours()).padStart(2,"0") + ":" + String(d.getMinutes()).padStart(2,"0");
 }
 
-async function _readMasterSnapshot(handle) {
-  const text = await _readMasterText(handle);
-  return {
-    text,
-    lockInfo: _parseEditorLockFromText(text),
-  };
-}
+// ── File I/O ──────────────────────────────────────────────────
 
-async function _tryFetchText(url) {
-  if (typeof fetch === "function") {
-    try {
-      const res = await fetch(url, { cache: "no-store" });
-      if (res && res.ok) return await res.text();
-    } catch (e) {}
-  }
-
-  if (typeof XMLHttpRequest !== "undefined") {
-    return new Promise((resolve) => {
-      try {
-        const req = new XMLHttpRequest();
-        req.open("GET", url, true);
-        req.onload = () => {
-          if ((req.status >= 200 && req.status < 300) || req.status === 0) resolve(req.responseText || "");
-          else resolve("");
-        };
-        req.onerror = () => resolve("");
-        req.send();
-      } catch (e) {
-        resolve("");
-      }
-    });
-  }
-
-  return "";
-}
-
-async function _tryAutoLoadBundledMaster() {
-  if (_masterFileHandle || _plannerHasContent()) return false;
-  const text = await _tryFetchText(_AUTO_MASTER_FILENAME);
-  if (!text || !text.trim()) return false;
-  await _importMasterText(text);
-  _autoLoadedMasterName = _AUTO_MASTER_FILENAME;
-  _updateAutoSaveUI();
-  return true;
-}
-
-async function _ensureMasterPermission() {
+async function _checkWritePermission() {
   if (!_masterFileHandle) return false;
-  const perm = await _masterFileHandle.queryPermission({ mode: "readwrite" });
-  if (perm === "granted") return true;
-  const req = await _masterFileHandle.requestPermission({ mode: "readwrite" });
-  return req === "granted";
+  try {
+    const perm = await _masterFileHandle.queryPermission({ mode: "readwrite" });
+    if (perm === "granted") { _canWrite = true; return true; }
+    return false;
+  } catch (e) { return false; }
+}
+async function _requestWritePermission() {
+  if (!_masterFileHandle) return false;
+  try {
+    const perm = await _masterFileHandle.requestPermission({ mode: "readwrite" });
+    _canWrite = perm === "granted";
+    return _canWrite;
+  } catch (e) { _canWrite = false; return false; }
 }
 
-function _setDisconnectedState() {
-  _hasEditLock = false;
-  _isReadOnlyMaster = false;
-  _editorLockInfo = null;
-  _masterFileHandle = null;
-  _stopTimer();
-  _updateAutoSaveUI();
+async function _readFileText(handle) {
+  try { const f = await handle.getFile(); return await f.text(); } catch (e) { return null; }
 }
-
-function _setReadOnlyState(lockInfo) {
-  _hasEditLock = false;
-  _isReadOnlyMaster = !!lockInfo;
-  _editorLockInfo = lockInfo || null;
-  _stopTimer();
-  _updateAutoSaveUI();
-}
-
-function _setEditingState() {
-  _hasEditLock = true;
-  _isReadOnlyMaster = false;
-  _startTimer();
-  _updateAutoSaveUI();
-}
-
-// ── Core write ────────────────────────────────────────────────
-
-async function _writeToHandle(handle, options) {
-  const csv = generateCSVString({
-    includeEditorLock: !!(options && options.includeEditorLock),
-  });
+async function _writeFile(handle) {
+  const csv = generateCSVString({ includeEditorLock: true });
   const writable = await handle.createWritable();
   await writable.write(csv);
   await writable.close();
 }
 
-async function _doAutoSave() {
-  if (!_masterFileHandle || !_hasEditLock) return;
-  try {
-    const hasPermission = await _ensureMasterPermission();
-    if (!hasPermission) {
-      _updateAutoSaveUI();
-      return;
-    }
-
-    await _writeToHandle(_masterFileHandle, { includeEditorLock: true });
-    _changesSinceLastSave = false;
-    _updateAutoSaveUI();
-  } catch (e) {
-    console.warn("Auto-save write failed:", e);
-    const s = document.getElementById("autosave-status");
-    if (s) s.textContent = "Save failed";
-  }
+function _plannerHasContent() {
+  return items.length > 0 || alarms.length > 0 || people.length > 0 ||
+    holidays.length > 0 || links.length > 0 || customTemplates.length > 0;
 }
-
-async function _releaseEditLock(clearStoredHandle) {
-  if (_masterFileHandle && _hasEditLock) {
-    try {
-      const hasPermission = await _ensureMasterPermission();
-      if (hasPermission) {
-        await _writeToHandle(_masterFileHandle, { includeEditorLock: false });
-      }
-    } catch (e) {
-      console.warn("Could not release edit lock cleanly:", e);
-    }
-  }
-
-  _hasEditLock = false;
-  _isReadOnlyMaster = false;
-  _editorLockInfo = null;
-  _stopTimer();
-
-  if (clearStoredHandle) {
-    _masterFileHandle = null;
-    await _clearHandle();
-  }
-
-  _updateAutoSaveUI();
-}
-
-// ── markChanged — called by pushUndo / CSV import ─────────────
-
-function markChanged() {
-  _changesSinceLastSave = true;
-  clearTimeout(markChanged._debounce);
-  markChanged._debounce = setTimeout(() => {
-    if (_masterFileHandle && _hasEditLock) _doAutoSave();
-  }, 3000);
-}
-markChanged._debounce = null;
-
-// ── Banner helpers ────────────────────────────────────────────
-
-function _showMasterBanner() {
-  const banner = document.getElementById("autosave-restore-banner");
-  if (!banner || !_masterFileHandle) return;
-
-  if (_isReadOnlyMaster && _isLockActive(_editorLockInfo)) {
-    banner.innerHTML =
-      '<span style="flex:1">📂 Shared planner: <strong>' +
-      _masterFileHandle.name +
-      "</strong> — read-only right now, locked by <strong>" +
-      _formatLockOwner(_editorLockInfo).replace(/</g, "&lt;") +
-      "</strong>.</span>" +
-      '<button class="success" onclick="restoreFromMasterCSV()" style="padding:4px 14px;font-size:13px;flex-shrink:0;">Load Latest</button>' +
-      '<button class="outline" onclick="startEditingMasterCSV()" style="padding:4px 14px;font-size:13px;flex-shrink:0;">Try Edit</button>' +
-      '<button class="outline" onclick="dismissRestoreBanner()" style="padding:4px 14px;font-size:13px;flex-shrink:0;">Hide</button>';
-    banner.style.display = "flex";
-    return;
-  }
-
-  banner.innerHTML =
-    '<span style="flex:1">📂 Shared planner ready: <strong>' +
-    _masterFileHandle.name +
-    "</strong>.</span>" +
-    '<button class="success" onclick="restoreFromMasterCSV()" style="padding:4px 14px;font-size:13px;flex-shrink:0;">Load</button>' +
-    '<button class="outline" onclick="startEditingMasterCSV()" style="padding:4px 14px;font-size:13px;flex-shrink:0;">Start Editing</button>' +
-    '<button class="outline" onclick="dismissRestoreBanner()" style="padding:4px 14px;font-size:13px;flex-shrink:0;">Hide</button>';
-  banner.style.display = "flex";
-}
-
-function dismissRestoreBanner() {
-  const banner = document.getElementById("autosave-restore-banner");
-  if (banner) banner.style.display = "none";
-}
-
-// ── Master file / edit-lock control ───────────────────────────
-
 async function _importMasterText(text) {
   if (text && text.trim()) _importCSVText(text);
 }
 
-async function setMasterCSVFile() {
-  if (!window.showSaveFilePicker) {
+// ── Auto-save & polling ───────────────────────────────────────
+
+async function _doAutoSave() {
+  if (!_masterFileHandle || !_canWrite) return;
+  try {
+    await _writeFile(_masterFileHandle);
+    _changesSinceLastSave = false;
+    _lastSavedAt = Date.now();
+    _updateAutoSaveUI();
+  } catch (e) {
+    console.warn("Auto-save failed:", e);
+    _showStatus("⚠ Save failed", "#ef4444");
+  }
+}
+
+async function _pollForChanges() {
+  if (!_masterFileHandle) return;
+  const text = await _readFileText(_masterFileHandle);
+  if (!text || !text.trim()) return;
+  const info = _parseSavedByFromText(text);
+  if (!info || !info.savedAt) return;
+  const savedAt = Date.parse(info.savedAt);
+  if (savedAt <= _lastSavedAt + 5000) return;     // our own save
+  const myName = _getEditorName();
+  if (info.editorName === myName) return;          // same user, different tab
+  _showToast("Updated by " + _formatSavedBy(info));
+  await _importMasterText(text);
+  _lastSavedAt = savedAt;
+}
+
+function _startTimers() {
+  if (!_autoSaveTimer) _autoSaveTimer = setInterval(_doAutoSave, _AUTOSAVE_INTERVAL_MS);
+  if (!_pollTimer)     _pollTimer     = setInterval(_pollForChanges, _POLL_INTERVAL_MS);
+}
+function _stopTimers() {
+  clearInterval(_autoSaveTimer); _autoSaveTimer = null;
+  clearInterval(_pollTimer);     _pollTimer     = null;
+}
+
+// markChanged — called by pushUndo / CSV import ───────────────
+
+function markChanged() {
+  _changesSinceLastSave = true;
+  _showStatus("● Unsaved", "#f59e0b");
+  clearTimeout(markChanged._debounce);
+  markChanged._debounce = setTimeout(() => {
+    if (_masterFileHandle && _canWrite) _doAutoSave();
+  }, 3000);
+}
+markChanged._debounce = null;
+
+// ── Toast ────────────────────────────────────────────────────
+
+function _showToast(msg) {
+  let t = document.getElementById("_as_toast");
+  if (!t) {
+    t = document.createElement("div");
+    t.id = "_as_toast";
+    t.style.cssText = "position:fixed;bottom:24px;right:24px;background:#1e293b;color:#fff;" +
+      "padding:10px 18px;border-radius:8px;font-size:13px;z-index:99999;" +
+      "box-shadow:0 4px 16px rgba(0,0,0,.3);transition:opacity .4s;pointer-events:none;";
+    document.body.appendChild(t);
+  }
+  t.textContent = msg; t.style.opacity = "1";
+  clearTimeout(_showToast._t);
+  _showToast._t = setTimeout(() => { t.style.opacity = "0"; }, 3500);
+}
+_showToast._t = null;
+
+// ── Status bar ───────────────────────────────────────────────
+
+function _showStatus(text, color) {
+  const el = document.getElementById("autosave-status");
+  if (el) { el.textContent = text; el.style.color = color || "#64748b"; }
+}
+function _updateAutoSaveUI() {
+  const btn   = document.getElementById("autosave-btn");
+  const label = document.getElementById("autosave-label");
+  if (label) label.textContent = _masterFileHandle ? "Auto-save" : "Open File";
+  if (btn) {
+    btn.title      = _masterFileHandle ? "Switch to a different shared file" : "Open the shared planner CSV file";
+    btn.style.color      = _masterFileHandle && _canWrite ? "#10b981" : "";
+    btn.style.fontWeight = _masterFileHandle && _canWrite ? "700" : "";
+  }
+  if (!_masterFileHandle) { _showStatus("No file", "#94a3b8"); return; }
+  if (_changesSinceLastSave) { _showStatus("● " + _masterFileHandle.name, "#f59e0b"); return; }
+  if (_lastSavedAt > 0) {
+    const d = new Date(_lastSavedAt);
+    _showStatus("✓ Saved " + String(d.getHours()).padStart(2,"0") + ":" + String(d.getMinutes()).padStart(2,"0"), "#10b981");
+  } else {
+    _showStatus("✓ " + _masterFileHandle.name, "#64748b");
+  }
+}
+
+// ── Banner ───────────────────────────────────────────────────
+
+function _showBanner(html) {
+  const b = document.getElementById("autosave-restore-banner");
+  if (b) { b.innerHTML = html; b.style.display = "flex"; }
+}
+function _hideBanner() {
+  const b = document.getElementById("autosave-restore-banner");
+  if (b) b.style.display = "none";
+}
+function dismissRestoreBanner() { _hideBanner(); }
+
+function _showOpenFileBanner() {
+  _showBanner(
+    '<span style="flex:1">📂 Open <strong>' + _AUTO_MASTER_FILENAME +
+    '</strong> to load and auto-save the shared planner.</span>' +
+    '<button class="success" onclick="openMasterCSVFile()" style="padding:4px 14px;font-size:13px;flex-shrink:0;">Open File</button>' +
+    '<button class="outline" onclick="_hideBanner()" style="padding:4px 14px;font-size:13px;flex-shrink:0;">Dismiss</button>'
+  );
+}
+function _showPermissionBanner(name) {
+  _showBanner(
+    '<span style="flex:1">📂 <strong>' + (name || _AUTO_MASTER_FILENAME) +
+    '</strong> — click <b>Grant access</b> to re-enable auto-save.</span>' +
+    '<button class="success" onclick="_grantAndStart()" style="padding:4px 14px;font-size:13px;flex-shrink:0;">Grant access</button>' +
+    '<button class="outline" onclick="_hideBanner()" style="padding:4px 14px;font-size:13px;flex-shrink:0;">Dismiss</button>'
+  );
+}
+
+// ── Grant permission after banner click ───────────────────────
+
+async function _grantAndStart() {
+  _hideBanner();
+  if (!_masterFileHandle) { await openMasterCSVFile(); return; }
+  const ok = await _requestWritePermission();
+  if (!ok) { _showToast("Permission denied — edits won't be auto-saved."); return; }
+  _ensureEditorName();
+  // Load latest content then start saving
+  const text = await _readFileText(_masterFileHandle);
+  if (text && text.trim()) await _importMasterText(text);
+  _changesSinceLastSave = true;
+  await _doAutoSave();
+  _startTimers();
+  _updateAutoSaveUI();
+}
+
+// ── Public: open file picker ──────────────────────────────────
+
+async function openMasterCSVFile() {
+  if (!window.showOpenFilePicker) {
     alert("Your browser does not support the File System Access API.\nUse Chrome or Edge.");
     return;
   }
-
   try {
-    const handle = await window.showSaveFilePicker({
-      suggestedName: "planner_master.csv",
+    const [handle] = await window.showOpenFilePicker({
       types: [{ description: "CSV Files", accept: { "text/csv": [".csv"] } }],
+      startIn: "documents",
     });
-
     _masterFileHandle = handle;
     await _storeHandle(handle);
-    dismissRestoreBanner();
-    await startEditingMasterCSV();
-  } catch (e) {
-    if (e.name !== "AbortError") console.error(e);
-  }
-}
+    _ensureEditorName();
 
-async function startEditingMasterCSV() {
-  if (!_masterFileHandle) {
-    await setMasterCSVFile();
-    return;
-  }
+    // Load existing content
+    const text = await _readFileText(handle);
+    if (text && text.trim()) await _importMasterText(text);
 
-  const editorName = _ensureEditorIdentity();
-  if (!editorName) return;
+    // Request write permission (may auto-grant since user just picked it)
+    _canWrite = await _checkWritePermission();
+    if (!_canWrite) _canWrite = await _requestWritePermission();
 
-  try {
-    const hasPermission = await _ensureMasterPermission();
-    if (!hasPermission) return;
-
-    const snapshot = await _readMasterSnapshot(_masterFileHandle);
-    const activeLock = _isLockActive(snapshot.lockInfo) ? snapshot.lockInfo : null;
-
-    if (activeLock && activeLock.sessionId !== _editorSessionId) {
-      _setReadOnlyState(activeLock);
-      if (snapshot.text && snapshot.text.trim()) {
-        await _importMasterText(snapshot.text);
-      }
-      _showMasterBanner();
-      alert("Shared planner is currently being edited by " + _formatLockOwner(activeLock) + ".");
-      return;
-    }
-
-    if (snapshot.text && snapshot.text.trim()) {
-      const shouldLoadShared =
-        !_plannerHasContent() ||
-        confirm(
-          "Load the selected shared planner before taking the edit lock?\n\n" +
-            "OK = load the shared file first\n" +
-            "Cancel = keep the current planner and overwrite the shared file after locking",
-        );
-      if (shouldLoadShared) {
-        await _importMasterText(snapshot.text);
-      }
-    }
-
-    _editorLockInfo = {
-      sessionId: _editorSessionId,
-      editorName,
-      acquiredAt:
-        snapshot.lockInfo && snapshot.lockInfo.sessionId === _editorSessionId
-          ? snapshot.lockInfo.acquiredAt || new Date().toISOString()
-          : new Date().toISOString(),
-    };
-
-    _setEditingState();
     _changesSinceLastSave = true;
-    await _doAutoSave();
-
-    const verifySnapshot = await _readMasterSnapshot(_masterFileHandle);
-    if (!verifySnapshot.lockInfo || verifySnapshot.lockInfo.sessionId !== _editorSessionId) {
-      _setReadOnlyState(verifySnapshot.lockInfo);
-      _showMasterBanner();
-      alert("Could not secure the edit lock. Another editor took it first.");
-      return;
-    }
-
-    dismissRestoreBanner();
-  } catch (e) {
-    console.error("Could not start editing shared planner:", e);
-  }
-}
-
-async function clearMasterCSVFile() {
-  await _releaseEditLock(true);
-  dismissRestoreBanner();
-}
-
-async function restoreFromMasterCSV() {
-  if (!_masterFileHandle) return;
-
-  try {
-    const text = await _readMasterText(_masterFileHandle);
-    await _importMasterText(text);
-
-    const activeLock = _isLockActive(_parseEditorLockFromText(text))
-      ? _parseEditorLockFromText(text)
-      : null;
-    if (!_hasEditLock) {
-      _setReadOnlyState(activeLock);
-      _showMasterBanner();
-    } else {
-      dismissRestoreBanner();
-    }
+    if (_canWrite) await _doAutoSave();
+    _startTimers();
+    _hideBanner();
     _updateAutoSaveUI();
+    if (!_canWrite) _showToast("Loaded read-only — could not get write permission.");
   } catch (e) {
-    console.error("Restore from master CSV failed:", e);
+    if (e.name !== "AbortError") console.error("Could not open file:", e);
   }
 }
 
-// ── Timer / UI ────────────────────────────────────────────────
-
-function _startTimer() {
-  if (_autoSaveTimer) return;
-  _autoSaveTimer = setInterval(_doAutoSave, _AUTOSAVE_INTERVAL_MS);
-}
-
-function _stopTimer() {
-  clearInterval(_autoSaveTimer);
-  _autoSaveTimer = null;
-}
-
-function _updateAutoSaveUI() {
-  const btn = document.getElementById("autosave-btn");
-  const statusEl = document.getElementById("autosave-status");
-  const label = document.getElementById("autosave-label");
-
-  if (label) {
-    if (_hasEditLock) label.textContent = "Edit Lock: ON";
-    else if (_masterFileHandle && _isReadOnlyMaster) label.textContent = "Read-only";
-    else if (_masterFileHandle) label.textContent = "Shared File";
-    else label.textContent = "Edit Lock: OFF";
-  }
-
-  if (btn) {
-    if (_hasEditLock) {
-      btn.style.color = "#10b981";
-      btn.style.fontWeight = "700";
-      btn.title = "Click to release the edit lock and stop shared auto-save";
-    } else if (_masterFileHandle && _isReadOnlyMaster) {
-      btn.style.color = "#b45309";
-      btn.style.fontWeight = "700";
-      btn.title = "Shared file is read-only right now. Click to try taking the edit lock";
-    } else if (_masterFileHandle) {
-      btn.style.color = "#2563eb";
-      btn.style.fontWeight = "700";
-      btn.title = "Shared file is connected. Click to take the edit lock";
-    } else {
-      btn.style.color = "";
-      btn.style.fontWeight = "";
-      btn.title = "Pick a shared CSV file for single-editor auto-save";
-    }
-  }
-
-  if (!statusEl) return;
-  if (!_masterFileHandle) {
-    statusEl.textContent = _autoLoadedMasterName ? "✓ " + _autoLoadedMasterName : "";
-    return;
-  }
-
-  if (_hasEditLock) {
-    const name = _masterFileHandle.name || "master.csv";
-    statusEl.textContent = (_changesSinceLastSave ? "● " : "🔒 ") + name;
-    return;
-  }
-
-  if (_isReadOnlyMaster && _isLockActive(_editorLockInfo)) {
-    statusEl.textContent = "👀 " + _formatLockOwner(_editorLockInfo);
-    return;
-  }
-
-  statusEl.textContent = "✓ " + (_masterFileHandle.name || "master.csv");
-}
-
-// ── Button click handler ──────────────────────────────────────
-
-function toggleAutoSave() {
-  if (_hasEditLock) {
-    clearMasterCSVFile();
-  } else if (_masterFileHandle) {
-    startEditingMasterCSV();
-  } else {
-    setMasterCSVFile();
-  }
+// toggleAutoSave — toolbar button
+async function toggleAutoSave() {
+  await openMasterCSVFile();
 }
 
 // ── Init ──────────────────────────────────────────────────────
 
 async function initAutoSave() {
+  // Browsers without File System Access API: nothing we can do for auto-save
   if (!window.showSaveFilePicker) {
     const btn = document.getElementById("autosave-btn");
     if (btn) btn.style.display = "none";
-    await _tryAutoLoadBundledMaster();
+    _updateAutoSaveUI();
+    _showOpenFileBanner();
     return;
   }
 
   const handle = await _loadHandle();
+
   if (!handle) {
-    await _tryAutoLoadBundledMaster();
+    // First time ever — show open-file banner
     _updateAutoSaveUI();
+    _showOpenFileBanner();
     return;
   }
 
-  try {
-    await handle.queryPermission({ mode: "readwrite" });
-    _masterFileHandle = handle;
-    const snapshot = await _readMasterSnapshot(handle);
-    const activeLock = _isLockActive(snapshot.lockInfo) ? snapshot.lockInfo : null;
-    _setReadOnlyState(activeLock);
-    if (snapshot.text && snapshot.text.trim()) _showMasterBanner();
-  } catch (e) {
-    await _clearHandle();
-    _setDisconnectedState();
+  // We have a stored handle — check permission
+  _masterFileHandle = handle;
+  const granted = await _checkWritePermission();
+
+  if (granted) {
+    // Best case: silently auto-load and start auto-saving
+    _canWrite = true;
+    const text = await _readFileText(handle);
+    if (text && text.trim()) {
+      await _importMasterText(text);
+      const info = _parseSavedByFromText(text);
+      if (info) {
+        _lastSeenSavedBy = _formatSavedBy(info);
+        _lastSavedAt = info.savedAt ? Date.parse(info.savedAt) : 0;
+        const myName = _getEditorName();
+        if (info.editorName && myName && info.editorName !== myName) {
+          _showToast("Loaded • Last saved by " + _lastSeenSavedBy);
+        }
+      }
+    }
+    _ensureEditorName();
+    _changesSinceLastSave = true;
+    await _doAutoSave();
+    _startTimers();
+    _hideBanner();
+  } else {
+    // Permission expired — need one click to re-grant
+    // Try to show file content from a fresh file read (may fail without permission)
+    // but at least show something useful in the banner
+    _showPermissionBanner(handle.name);
+    // Try read-only load (queryPermission for "read" only)
+    try {
+      const readPerm = await handle.queryPermission({ mode: "read" });
+      if (readPerm === "granted") {
+        const text = await _readFileText(handle);
+        if (text && text.trim()) await _importMasterText(text);
+      }
+    } catch (e) {}
   }
+
+  _updateAutoSaveUI();
 }
 
 window.addEventListener("pagehide", () => {
-  if (_hasEditLock) {
-    _changesSinceLastSave = true;
-    _doAutoSave();
-  }
+  if (_masterFileHandle && _canWrite && _changesSinceLastSave) _doAutoSave();
 });

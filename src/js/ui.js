@@ -298,6 +298,7 @@ function toggleTemplatesModal() {
   const modal = document.getElementById("templates-modal-overlay");
   if (modal.style.display === "none") {
     modal.style.display = "flex";
+    _syncCategoryDropdowns();
     renderTemplatesList();
   } else {
     modal.style.display = "none";
@@ -306,60 +307,62 @@ function toggleTemplatesModal() {
 
 function saveTemplatesLocal() {
   try {
-    localStorage.setItem(
-      "diaglo_activity_templates",
-      JSON.stringify(customTemplates),
-    );
+    localStorage.setItem("diaglo_activity_templates", JSON.stringify(customTemplates));
   } catch (e) {
     console.warn("Could not save templates", e);
   }
 }
 
+function _saveCategoriesLocal() {
+  try {
+    localStorage.setItem("diaglo_template_categories", JSON.stringify(templateCategories));
+  } catch (e) {
+    console.warn("Could not save template categories", e);
+  }
+}
+
 function addTemplate() {
-  const nameInput = document.getElementById("new-template-name");
-  const durInput = document.getElementById("new-template-duration");
+  const nameInput  = document.getElementById("new-template-name");
+  const durInput   = document.getElementById("new-template-duration");
   const colorInput = document.getElementById("new-template-color");
+  const catInput   = document.getElementById("new-template-category");
 
-  const name = nameInput.value.trim();
+  const name    = nameInput.value.trim();
   const durDays = parseFloat(durInput.value);
-  const color = colorInput.value;
+  const color   = colorInput.value;
+  const catId   = catInput ? catInput.value || null : null;
+  const askName     = !!(document.getElementById("new-tmpl-ask-name")     || {}).checked;
+  const askDuration = !!(document.getElementById("new-tmpl-ask-duration") || {}).checked;
+  const askColor    = !!(document.getElementById("new-tmpl-ask-color")    || {}).checked;
 
-  if (!name) {
-    alert("Please enter an activity name.");
-    return;
+  if (!name) { alert("Please enter an activity name."); return; }
+  if (isNaN(durDays) || durDays <= 0) { alert("Please enter a valid day length."); return; }
+  if (customTemplates.some((t) => t.name.toLowerCase() === name.toLowerCase())) {
+    alert("A template with this name already exists."); return;
   }
-  if (isNaN(durDays) || durDays <= 0) {
-    alert("Please enter a valid day length.");
-    return;
-  }
-
-  // check duplicate name
-  if (
-    customTemplates.some(
-      (t) => t.name.toLowerCase() === name.toLowerCase(),
-    )
-  ) {
-    alert("A template with this name already exists.");
-    return;
-  }
-
-  // Convert days to weeks internally
-  const durWeeks = durDays / 5;
 
   customTemplates.push({
     id: "t_" + Date.now(),
     name,
-    duration: durWeeks,
+    duration: durDays / 5,
     color,
+    category: catId,
+    askName:     askName     || undefined,
+    askDuration: askDuration || undefined,
+    askColor:    askColor    || undefined,
   });
 
   nameInput.value = "";
-  durInput.value = "10";
+  durInput.value  = "10";
   colorInput.value = "#4f46e5";
+  if (catInput) catInput.value = "";
+  ["new-tmpl-ask-name","new-tmpl-ask-duration","new-tmpl-ask-color"].forEach(function(id) {
+    const el = document.getElementById(id); if (el) el.checked = false;
+  });
 
   saveTemplatesLocal();
   renderTemplatesList();
-  render(); // refresh dropdowns in the grid
+  render();
 }
 
 function deleteTemplate(id) {
@@ -375,54 +378,149 @@ function deleteTemplate(id) {
   render(); // refresh dropdowns in the grid
 }
 
+// Track which category sections are collapsed (by catId or "__none__" for uncategorized)
+let _collapsedCats = new Set();
+
+function toggleTemplateCategory(catKey) {
+  if (_collapsedCats.has(catKey)) _collapsedCats.delete(catKey);
+  else _collapsedCats.add(catKey);
+  renderTemplatesList();
+}
+
+function addCategory() {
+  const el = document.getElementById("new-category-name");
+  const name = el ? el.value.trim() : (prompt("Category name:") || "").trim();
+  if (!name) return;
+  const id = "cat_" + Date.now();
+  templateCategories.push({ id, name });
+  _saveCategoriesLocal();
+  if (el) el.value = "";
+  renderTemplatesList();
+  _syncCategoryDropdowns();
+}
+
+function deleteCategory(catId) {
+  if (!confirm("Delete this category? Its templates will become uncategorized.")) return;
+  templateCategories = templateCategories.filter(function(c) { return c.id !== catId; });
+  customTemplates.forEach(function(t) { if (t.category === catId) t.category = null; });
+  _saveCategoriesLocal();
+  saveTemplatesLocal();
+  renderTemplatesList();
+  _syncCategoryDropdowns();
+}
+
+function renameCategory(catId) {
+  const cat = templateCategories.find(function(c) { return c.id === catId; });
+  if (!cat) return;
+  const name = prompt("Rename category:", cat.name);
+  if (!name || !name.trim()) return;
+  cat.name = name.trim();
+  _saveCategoriesLocal();
+  renderTemplatesList();
+  _syncCategoryDropdowns();
+}
+
+function setTemplateCategory(templateId, catId) {
+  const t = customTemplates.find(function(ct) { return ct.id === templateId; });
+  if (t) t.category = catId || null;
+  saveTemplatesLocal();
+  renderTemplatesList();
+}
+
+// Sync the category <select> elements in the modal (add-template form)
+function _syncCategoryDropdowns() {
+  const opts = '<option value="">No category</option>' +
+    templateCategories.map(function(c) {
+      return '<option value="' + c.id + '">' + c.name.replace(/</g, "&lt;") + '</option>';
+    }).join("");
+  ["new-template-category"].forEach(function(id) {
+    const el = document.getElementById(id);
+    if (el) { const v = el.value; el.innerHTML = opts; el.value = v; }
+  });
+}
+
+function _renderTemplateRow(t) {
+  const isMaster = !!(t.composition && t.composition.length > 0);
+  const paramBadge = (t.askName || t.askDuration || t.askColor)
+    ? '<span class="tmpl-badge tmpl-badge-param">Parameterized</span>' : "";
+  const masterBadge = isMaster ? '<span class="tmpl-badge tmpl-badge-master">Master</span>' : "";
+  const catSelect = '<select class="tmpl-cat-select" onchange="setTemplateCategory(\'' + t.id + '\', this.value)" onclick="event.stopPropagation()" title="Category">' +
+    '<option value="">—</option>' +
+    templateCategories.map(function(c) {
+      return '<option value="' + c.id + '"' + (t.category === c.id ? " selected" : "") + '>' + c.name.replace(/</g, "&lt;") + '</option>';
+    }).join("") + '</select>';
+
+  const dragAttrs = isMaster
+    ? 'title="Click to edit Master Template" onclick="loadMasterForEdit(\'' + t.id + '\')"'
+    : 'draggable="true" ondragstart="handleTemplateDragStart(event,\'' + t.id + '\')" title="Drag to Composer"';
+
+  return '<div class="tmpl-row" ' + dragAttrs + '>' +
+    '<div class="tmpl-row-left">' +
+      '<div class="tmpl-color-dot" style="background:' + (t.color || "#4f46e5") + '"></div>' +
+      '<span class="tmpl-name">' + t.name.replace(/</g, "&lt;") + '</span>' +
+      masterBadge + paramBadge +
+    '</div>' +
+    '<div class="tmpl-row-right">' +
+      '<span class="tmpl-dur">' + Number((t.duration * 5).toFixed(1)) + 'd</span>' +
+      catSelect +
+      '<button class="tmpl-del-btn" onclick="event.stopPropagation(); deleteTemplate(\'' + t.id + '\')" title="Delete">&times;</button>' +
+    '</div>' +
+  '</div>';
+}
+
 function renderTemplatesList() {
   const list = document.getElementById("templates-list");
+  if (!list) return;
   const searchEl = document.getElementById("template-search");
-  let query = searchEl ? searchEl.value.toLowerCase() : "";
+  const query = searchEl ? searchEl.value.toLowerCase() : "";
 
-  const filteredTemplates = customTemplates.filter((t) =>
-    t.name.toLowerCase().includes(query),
-  );
+  const all = customTemplates.filter(function(t) { return t.name.toLowerCase().includes(query); });
 
-  if (filteredTemplates.length === 0) {
-    if (query) {
-      list.innerHTML =
-        '<div style="padding: 12px; color: #94a3b8; text-align: center; font-style: italic; font-size: 13px;">No templates found matching "' +
-        query.replace(/</g, "&lt;") +
-        '".</div>';
-    } else {
-      list.innerHTML =
-        '<div style="padding: 12px; color: #94a3b8; text-align: center; font-style: italic; font-size: 13px;">No custom templates saved yet.</div>';
-    }
+  if (all.length === 0) {
+    list.innerHTML = '<div style="padding:16px;color:#94a3b8;text-align:center;font-style:italic;font-size:13px;">' +
+      (query ? 'No templates matching "' + query.replace(/</g, "&lt;") + '".' : "No templates yet. Add one above.") + '</div>';
     return;
   }
 
-  let html = "";
-  filteredTemplates.forEach((t) => {
-    // Only allow basic templates to be dragged to avoid infinite loops
-    const isMaster = t.composition && t.composition.length > 0;
-    const dragAttrs = isMaster
-      ? 'opacity: 0.6; cursor: pointer;" title="Click to edit this Master Template" onclick="loadMasterForEdit(\'' +
-      t.id +
-      "')\""
-      : 'cursor: grab;" draggable="true" ondragstart="handleTemplateDragStart(event, \'' +
-      t.id +
-      '\')" title="Drag into Template Composer"';
-
-    html += `
-      <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid #f1f5f9; ${dragAttrs}">
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <div style="width: 16px; height: 16px; border-radius: 4px; background: ${t.color}; border: 1px solid rgba(0,0,0,0.1);"></div>
-          <div style="font-size: 14px; font-weight: 500; color: #1e293b;">${t.name.replace(/</g, "&lt;")} ${isMaster ? '<span style="font-size:10px;background:#fef3c7;padding:2px 4px;border-radius:4px;">Master</span>' : ""}</div>
-        </div>
-        <div style="display: flex; align-items: center; gap: 12px;">
-          <span style="font-size: 12px; color: #64748b;">${Number((t.duration * 5).toFixed(1))} days</span>
-          <button onclick="event.stopPropagation(); deleteTemplate('${t.id}')" style="background: none; border: none; color: #ef4444; font-size: 16px; cursor: pointer; padding: 0 4px;" title="Remove template">&times;</button>
-        </div>
-      </div>
-    `;
+  // Build category groups
+  const groups = [];
+  templateCategories.forEach(function(cat) {
+    const ts = all.filter(function(t) { return t.category === cat.id; });
+    if (ts.length > 0 || !query) groups.push({ key: cat.id, label: cat.name, isCat: true, templates: ts });
   });
+  const uncategorized = all.filter(function(t) {
+    return !t.category || !templateCategories.find(function(c) { return c.id === t.category; });
+  });
+  if (uncategorized.length > 0) groups.push({ key: "__none__", label: "Uncategorized", isCat: false, templates: uncategorized });
+
+  let html = "";
+  groups.forEach(function(g) {
+    const collapsed = _collapsedCats.has(g.key);
+    const chevron = collapsed ? "▶" : "▼";
+    html += '<div class="tmpl-cat-section">' +
+      '<div class="tmpl-cat-header" onclick="toggleTemplateCategory(\'' + g.key + '\')">' +
+        '<span class="tmpl-cat-chevron">' + chevron + '</span>' +
+        '<span class="tmpl-cat-label">' + g.label.replace(/</g, "&lt;") +
+          ' <span class="tmpl-cat-count">' + g.templates.length + '</span></span>' +
+        (g.isCat
+          ? '<span class="tmpl-cat-actions">' +
+              '<button onclick="event.stopPropagation(); renameCategory(\'' + g.key + '\')" title="Rename">✏️</button>' +
+              '<button onclick="event.stopPropagation(); deleteCategory(\'' + g.key + '\')" title="Delete category">&times;</button>' +
+            '</span>'
+          : '') +
+      '</div>';
+    if (!collapsed) {
+      if (g.templates.length === 0) {
+        html += '<div style="padding:8px 16px;color:#94a3b8;font-size:12px;font-style:italic;">Empty — drag templates here or assign them above.</div>';
+      } else {
+        g.templates.forEach(function(t) { html += _renderTemplateRow(t); });
+      }
+    }
+    html += '</div>';
+  });
+
   list.innerHTML = html;
+  _syncCategoryDropdowns();
 }
 
 // --- Master Template Composer Logic ---
@@ -868,11 +966,69 @@ function toggleComments() {
   render();
 }
 
+function scrollToToday() {
+  // Always reset to real system today (clear any manual drag offset)
+  resetTodayLine();
+  if (!_todayLineVisible) {
+    _todayLineVisible = true;
+    render();
+  }
+  const todayWk = getTodayLineWeek();
+  if (todayWk === null) return;
+  // Compute the pixel X of the today line
+  const { cw, widths, offsets } = _computeYearLayout();
+  const info = getYearWeekInfo(Math.floor(todayWk));
+  const yi = info.yearIndex;
+  const relW = info.relWeek - 1;
+  let todayPx;
+  if (hiddenYears.has(yi)) {
+    todayPx = offsets[yi] + 12; // center of collapsed year
+  } else if (zoomMode === "days") {
+    const dayOffset = Math.max(0, Math.min(4.999, (todayWk - Math.floor(todayWk)) * 5));
+    todayPx = offsets[yi] + (relW * 5 + dayOffset) * cw + cw / 2;
+  } else if (zoomMode === "months") {
+    todayPx = offsets[yi] + ((info.relWeek / info.weeksInYear) * 12) * cw;
+  } else {
+    const frac = todayWk - Math.floor(todayWk);
+    todayPx = offsets[yi] + relW * cw + frac * cw;
+  }
+  // Scroll the container so the today line is roughly centered
+  const container = document.querySelector(".planner-container");
+  if (container) {
+    const viewW = container.clientWidth;
+    // Account for name + comment column widths
+    const nameW = parseFloat(getComputedStyle(gridEl).getPropertyValue("--name-width")) || 200;
+    const commentW = showComments ? (parseFloat(getComputedStyle(gridEl).getPropertyValue("--comment-width")) || 0) : 0;
+    const timelineViewW = viewW - nameW - commentW;
+    container.scrollLeft = Math.max(0, todayPx - timelineViewW / 2);
+  }
+}
+
+// Right-click on Today button toggles the line on/off
+document.addEventListener("DOMContentLoaded", function () {
+  var btn = document.getElementById("today-line-btn");
+  if (btn) {
+    btn.addEventListener("contextmenu", function (e) {
+      e.preventDefault();
+      toggleTodayLine();
+    });
+  }
+});
+
 function toggleHighlight(val) {
   if (highlightedWeek === val) {
     highlightedWeek = null;
   } else {
     highlightedWeek = val;
+  }
+  render();
+}
+
+function toggleRowHighlight(id) {
+  if (highlightedRowId === id) {
+    highlightedRowId = null;
+  } else {
+    highlightedRowId = id;
   }
   render();
 }
@@ -938,6 +1094,79 @@ function clearFilter(column) {
   render();
 }
 
+// ── Custom Column UI ─────────────────────────────────────────
+
+function toggleColManager() {
+  var panel = document.getElementById("col-manager-panel");
+  if (!panel) return;
+  if (panel.style.display === "block") {
+    panel.style.display = "none";
+    return;
+  }
+  _renderColManager();
+  panel.style.display = "block";
+}
+
+function _renderColManager() {
+  var panel = document.getElementById("col-manager-panel");
+  if (!panel) return;
+  var h = '<h3>Manage Columns</h3>';
+  if (customColumns.length === 0) {
+    h += '<div style="color:#94a3b8; font-size:12px; margin-bottom:12px;">No custom columns yet. Click "+ Add Column" below to create one.</div>';
+  }
+  customColumns.forEach(function (col, idx) {
+    h += '<div class="cm-row">';
+    h += '<input type="checkbox"' + (col.visible ? " checked" : "") +
+      ' onchange="toggleCustomColumn(\'' + col.id + '\'); _renderColManager();" title="Show / Hide">';
+    h += '<input type="text" value="' + (col.name || "").replace(/"/g, "&quot;") +
+      '" onchange="renameCustomColumn(\'' + col.id + '\', this.value)">';
+    h += '<button class="cm-btn" onclick="moveCustomColumn(\'' + col.id + '\', -1)" title="Move up">&uarr;</button>';
+    h += '<button class="cm-btn" onclick="moveCustomColumn(\'' + col.id + '\', 1)" title="Move down">&darr;</button>';
+    h += '<button class="cm-btn" onclick="if(confirm(\'Delete column ' + (col.name || "").replace(/'/g, "\\'") + '?\')) removeCustomColumn(\'' + col.id + '\')" title="Delete column" style="color:#ef4444;">&times;</button>';
+    h += '</div>';
+  });
+  h += '<div style="margin-top:12px; display:flex; gap:8px;">';
+  h += '<button class="outline" style="padding:4px 12px; font-size:12px; color:#6366f1;" onclick="addCustomColumn(); _renderColManager();">+ Add Column</button>';
+  h += '<button class="outline" style="padding:4px 12px; font-size:12px;" onclick="document.getElementById(\'col-manager-panel\').style.display=\'none\'">Close</button>';
+  h += '</div>';
+  panel.innerHTML = h;
+}
+
+function toggleColFilterMenu(colId, event) {
+  if (activeFilterMenu === colId) {
+    activeFilterMenu = null;
+  } else {
+    activeFilterMenu = colId;
+    if (event && event.currentTarget && gridEl) {
+      var triggerRect = event.currentTarget.getBoundingClientRect();
+      var gridRect = gridEl.getBoundingClientRect();
+      filterMenuPosition = {
+        top: Math.max(8, triggerRect.bottom - gridRect.top + 6),
+        left: Math.max(8, triggerRect.left - gridRect.left),
+      };
+    }
+  }
+  render();
+  if (event) event.stopPropagation();
+}
+
+function handleColFilterChange(colId, value, event) {
+  if (!columnFilters[colId]) columnFilters[colId] = [];
+  var checked = event.target.checked;
+  if (!checked) {
+    if (columnFilters[colId].indexOf(value) === -1) columnFilters[colId].push(value);
+  } else {
+    columnFilters[colId] = columnFilters[colId].filter(function (v) { return v !== value; });
+  }
+  render();
+}
+
+function clearColFilter(colId) {
+  columnFilters[colId] = [];
+  activeFilterMenu = null;
+  render();
+}
+
 function filterNameFilterOptions(query) {
   const menu = document.querySelector(".filter-menu.open");
   if (!menu) return;
@@ -956,11 +1185,19 @@ function filterNameFilterOptions(query) {
   if (emptyState) emptyState.style.display = visibleCount === 0 ? "block" : "none";
 }
 
-// Close filter menus when clicking outside
-document.addEventListener("click", () => {
+// Close filter menus and column manager when clicking outside
+document.addEventListener("click", (e) => {
   if (activeFilterMenu) {
     activeFilterMenu = null;
     render();
+  }
+  var colPanel = document.getElementById("col-manager-panel");
+  if (colPanel && colPanel.style.display === "block" && !colPanel.contains(e.target)) {
+    // only close if click was not on the Columns button
+    var btn = e.target.closest("button");
+    if (!btn || btn.getAttribute("onclick") !== "toggleColManager()") {
+      colPanel.style.display = "none";
+    }
   }
 });
 
@@ -969,6 +1206,164 @@ window.addEventListener("beforeunload", function (e) {
   e.preventDefault();
   e.returnValue = "Please remember to save to CSV before leaving!";
 });
+
+// ── Template Config Modal (shown when applying a parameterized template) ──
+
+let _tcmItemId = null;
+let _tcmTemplateId = null;
+
+function showTemplateConfigModal(itemId, templateId) {
+  const t = customTemplates.find(function(ct) { return ct.id === templateId; });
+  if (!t) { render(); return; }   // no template found — reset dropdown
+
+  _tcmItemId = itemId;
+  _tcmTemplateId = templateId;
+
+  const modal = document.getElementById("tmpl-config-modal");
+  if (!modal) return;
+
+  document.getElementById("tcm-title").textContent = "Configure: " + t.name;
+
+  const nameRow = document.getElementById("tcm-name-row");
+  const durRow  = document.getElementById("tcm-duration-row");
+  const colRow  = document.getElementById("tcm-color-row");
+
+  if (nameRow) {
+    nameRow.style.display = t.askName ? "flex" : "none";
+    document.getElementById("tcm-name").value = t.name;
+  }
+  if (durRow) {
+    durRow.style.display = t.askDuration ? "flex" : "none";
+    document.getElementById("tcm-duration").value = Number((t.duration * 5).toFixed(2));
+  }
+  if (colRow) {
+    colRow.style.display = t.askColor ? "flex" : "none";
+    document.getElementById("tcm-color").value = t.color || "#4f46e5";
+  }
+
+  modal.style.display = "flex";
+  // Focus first visible input
+  const firstInput = modal.querySelector("input:not([type=hidden])");
+  if (firstInput) setTimeout(function() { firstInput.focus(); }, 50);
+}
+
+function closeTemplateConfigModal() {
+  const modal = document.getElementById("tmpl-config-modal");
+  if (modal) modal.style.display = "none";
+  _tcmItemId = null;
+  _tcmTemplateId = null;
+  render(); // reset the dropdown in the grid row
+}
+
+function confirmTemplateConfig() {
+  if (!_tcmItemId || !_tcmTemplateId) return;
+  const t = customTemplates.find(function(ct) { return ct.id === _tcmTemplateId; });
+  if (!t) { closeTemplateConfigModal(); return; }
+
+  const nameVal = t.askName
+    ? (document.getElementById("tcm-name").value.trim() || t.name)
+    : null;
+  const durVal = t.askDuration
+    ? (parseFloat(document.getElementById("tcm-duration").value) || t.duration * 5) / 5
+    : null;
+  const colorVal = t.askColor
+    ? document.getElementById("tcm-color").value
+    : null;
+
+  const itemId = _tcmItemId;
+  const templateId = _tcmTemplateId;
+  const modal = document.getElementById("tmpl-config-modal");
+  if (modal) modal.style.display = "none";
+  _tcmItemId = null; _tcmTemplateId = null;
+
+  _applyTemplateCore(itemId, templateId, nameVal, durVal, colorVal);
+}
+
+// ── Template-modal category management also updates add-template dropdown ──
+
+function openTemplatesModal() {
+  toggleTemplatesModal();
+}
+
+// ── Multi-select ──────────────────────────────────────────────
+
+function _getVisibleItemIds() {
+  return Array.from(document.querySelectorAll(".row-select-cb"))
+    .map(cb => parseInt(cb.dataset.id))
+    .filter(id => !isNaN(id));
+}
+
+function _applySelectionToDOM(id, selected) {
+  const rowBg = document.querySelector('.row-bg[data-id="' + id + '"]');
+  if (rowBg) rowBg.classList.toggle("row-selected", selected);
+  const cb = document.querySelector('.row-select-cb[data-id="' + id + '"]');
+  if (cb) cb.checked = selected;
+  const block = document.getElementById("block-" + id);
+  if (block) block.classList.toggle("block-selected", selected);
+}
+
+function toggleItemSelection(id, event) {
+  event.stopPropagation();
+
+  if (event.shiftKey && _lastSelectedId !== null) {
+    const visibleIds = _getVisibleItemIds();
+    const fromIdx = visibleIds.indexOf(_lastSelectedId);
+    const toIdx = visibleIds.indexOf(id);
+    if (fromIdx !== -1 && toIdx !== -1) {
+      const lo = Math.min(fromIdx, toIdx);
+      const hi = Math.max(fromIdx, toIdx);
+      for (let i = lo; i <= hi; i++) {
+        selectedIds.add(visibleIds[i]);
+        _applySelectionToDOM(visibleIds[i], true);
+      }
+    }
+  } else {
+    const wasSelected = selectedIds.has(id);
+    if (wasSelected) {
+      selectedIds.delete(id);
+      _lastSelectedId = null;
+    } else {
+      selectedIds.add(id);
+      _lastSelectedId = id;
+    }
+    _applySelectionToDOM(id, !wasSelected);
+  }
+
+  _updateMultiselectBar();
+}
+
+function clearSelection() {
+  selectedIds.forEach(id => _applySelectionToDOM(id, false));
+  selectedIds.clear();
+  _lastSelectedId = null;
+  _updateMultiselectBar();
+}
+
+function selectAll() {
+  _getVisibleItemIds().forEach(id => {
+    selectedIds.add(id);
+    _applySelectionToDOM(id, true);
+  });
+  _lastSelectedId = null;
+  _updateMultiselectBar();
+}
+
+function _updateMultiselectBar() {
+  const bar = document.getElementById("multiselect-bar");
+  if (!bar) return;
+  if (selectedIds.size === 0) {
+    bar.style.display = "none";
+    return;
+  }
+  bar.style.display = "flex";
+  const countEl = document.getElementById("ms-count");
+  if (countEl) countEl.textContent = selectedIds.size + " item" + (selectedIds.size === 1 ? "" : "s") + " selected";
+  const assignSel = document.getElementById("ms-assign-select");
+  if (assignSel) {
+    assignSel.innerHTML = '<option value="">Assign to\u2026</option>' +
+      people.map(p => '<option value="' + p.id + '">' + p.name.replace(/</g, "&lt;") + '</option>').join("");
+  }
+}
 
 // Initialize Toolbars Visibility
 document.addEventListener("DOMContentLoaded", () => {
@@ -980,5 +1375,15 @@ document.addEventListener("DOMContentLoaded", () => {
     if (btnText) btnText.textContent = "Show Buttons";
   }
   const plannerContainer = document.querySelector(".planner-container");
-  if (plannerContainer) plannerContainer.addEventListener("mousedown", startPan);
+  if (plannerContainer) {
+    plannerContainer.addEventListener("mousedown", startPan);
+    plannerContainer.addEventListener("mousemove", updateTodayLineHoverCursor);
+    plannerContainer.addEventListener("scroll", function () {
+      if (typeof syncStickyColumnResizers === "function") syncStickyColumnResizers();
+    });
+    plannerContainer.addEventListener("mouseleave", function () {
+      plannerContainer.style.cursor = "";
+    });
+    if (typeof syncStickyColumnResizers === "function") syncStickyColumnResizers();
+  }
 });

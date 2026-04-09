@@ -38,6 +38,15 @@ function addSubItem(parentId, type, defaults) {
       return Math.max(maxEnd, subItem.startWeek + subDuration);
     }, parent.startWeek);
   }
+  // Prefer starting on the current Monday (or next Monday if mid-week) over
+  // placing the item at the tail of existing children, which may be far away.
+  const todayWk = typeof _getSystemTodayWeek === "function" ? _getSystemTodayWeek() : null;
+  if (todayWk !== null) {
+    const thisMonday = Math.ceil(todayWk - 0.0001); // Monday on or after today
+    if (thisMonday >= 1 && thisMonday <= getTotalWeekCount()) {
+      startWeek = thisMonday;
+    }
+  }
   startWeek = snapNewItemStartWeek(Math.min(getTotalWeekCount(), startWeek), type);
   ensureTimelineCovers(startWeek + (defaults.duration || 0));
 
@@ -351,75 +360,78 @@ function updateMilestoneName(id, name) {
   render();
 }
 
-function applyActivityTemplate(id, templateId) {
+// Internal: apply a template with optional overrides (called by config modal or directly)
+function _applyTemplateCore(id, templateId, nameOverride, durationWeeksOverride, colorOverride) {
   pushUndo();
   const item = items.find((i) => i.id === id);
-  if (item) {
-    if (templateId === "Custom Activity") {
-      item.name = "Custom Activity Name";
-    } else {
-      const t = customTemplates.find((ct) => ct.id === templateId);
-      if (t) {
-        item.name = t.name;
-        item.duration = t.duration;
-        item.color = t.color;
-        item.isExpanded = true;
-        let maxWeekNeeded = item.startWeek + (t.duration || 0);
+  if (!item) return;
 
-        if (t.composition && t.composition.length > 0) {
-          let currentStartWeek = Math.round((item.startWeek || 1) * 25) / 25;
-
-          t.composition.forEach((compItem) => {
-            const subT = customTemplates.find((ct) => ct.id === compItem.templateId);
-            if (subT) {
-              const subDur = subT.duration || 0.04;
-              if (compItem.quantity > 1) {
-                const wrapperId = nextId++;
-                items.push({
-                  id: wrapperId,
-                  type: "task",
-                  name: subT.name,
-                  duration: subDur * compItem.quantity,
-                  color: subT.color,
-                  startWeek: currentStartWeek,
-                  parentId: item.id,
-                  isExpanded: true,
-                });
-                maxWeekNeeded = Math.max(maxWeekNeeded, currentStartWeek + subDur * compItem.quantity);
-                for (let q = 0; q < compItem.quantity; q++) {
-                  items.push({
-                    id: nextId++,
-                    type: "task",
-                    name: subT.name + " " + (q + 1),
-                    duration: subDur,
-                    color: subT.color,
-                    startWeek: currentStartWeek,
-                    parentId: wrapperId,
-                  });
-                  maxWeekNeeded = Math.max(maxWeekNeeded, currentStartWeek + subDur);
-                  currentStartWeek = currentStartWeek + subDur;
-                }
-              } else {
-                items.push({
-                  id: nextId++,
-                  type: "task",
-                  name: subT.name,
-                  duration: subDur,
-                  color: subT.color,
-                  startWeek: currentStartWeek,
-                  parentId: item.id,
-                });
-                maxWeekNeeded = Math.max(maxWeekNeeded, currentStartWeek + subDur);
-                currentStartWeek = currentStartWeek + subDur;
-              }
-            }
-          });
-        }
-        ensureTimelineCovers(maxWeekNeeded);
-      }
-    }
+  if (templateId === "Custom Activity") {
+    item.name = nameOverride || "Custom Activity Name";
+    render();
+    return;
   }
+
+  const t = customTemplates.find((ct) => ct.id === templateId);
+  if (!t) { render(); return; }
+
+  item.name     = nameOverride          || t.name;
+  item.duration = durationWeeksOverride || t.duration;
+  item.color    = colorOverride         || t.color;
+  item.isExpanded = true;
+  let maxWeekNeeded = item.startWeek + item.duration;
+
+  if (t.composition && t.composition.length > 0) {
+    // Scale sub-item durations proportionally when duration was overridden
+    const scale = durationWeeksOverride ? (durationWeeksOverride / (t.duration || 1)) : 1;
+    let currentStartWeek = Math.round((item.startWeek || 1) * 25) / 25;
+
+    t.composition.forEach((compItem) => {
+      const subT = customTemplates.find((ct) => ct.id === compItem.templateId);
+      if (subT) {
+        const subDur = (subT.duration || 0.04) * scale;
+        if (compItem.quantity > 1) {
+          const wrapperId = nextId++;
+          items.push({ id: wrapperId, type: "task", name: subT.name,
+            duration: subDur * compItem.quantity, color: subT.color,
+            startWeek: currentStartWeek, parentId: item.id, isExpanded: true });
+          maxWeekNeeded = Math.max(maxWeekNeeded, currentStartWeek + subDur * compItem.quantity);
+          for (let q = 0; q < compItem.quantity; q++) {
+            items.push({ id: nextId++, type: "task", name: subT.name + " " + (q + 1),
+              duration: subDur, color: subT.color, startWeek: currentStartWeek, parentId: wrapperId });
+            maxWeekNeeded = Math.max(maxWeekNeeded, currentStartWeek + subDur);
+            currentStartWeek += subDur;
+          }
+        } else {
+          items.push({ id: nextId++, type: "task", name: subT.name,
+            duration: subDur, color: subT.color,
+            startWeek: currentStartWeek, parentId: item.id });
+          maxWeekNeeded = Math.max(maxWeekNeeded, currentStartWeek + subDur);
+          currentStartWeek += subDur;
+        }
+      }
+    });
+  }
+
+  ensureTimelineCovers(maxWeekNeeded);
   render();
+}
+
+function applyActivityTemplate(id, templateId) {
+  if (templateId === "Custom Activity") {
+    _applyTemplateCore(id, templateId);
+    return;
+  }
+  const t = customTemplates.find((ct) => ct.id === templateId);
+  if (!t) return;
+
+  // If template asks for parameters, show the config modal instead of applying directly
+  if (t.askName || t.askDuration || t.askColor) {
+    if (typeof showTemplateConfigModal === "function") showTemplateConfigModal(id, templateId);
+    return;
+  }
+
+  _applyTemplateCore(id, templateId);
 }
 
 function updateDuration(id, duration) {
@@ -443,8 +455,71 @@ function updateDuration(id, duration) {
 }
 
 function updateComment(id, comment) {
+  pushUndo();
   const item = items.find((i) => i.id === id);
   if (item) item.comment = comment;
+  render();
+}
+
+// ── Custom Column Management ──────────────────────────────────
+function addCustomColumn() {
+  pushUndo();
+  var name = "Column " + nextColId;
+  customColumns.push({
+    id: "col_" + Date.now() + "_" + nextColId,
+    name: name,
+    width: 150,
+    visible: true,
+  });
+  nextColId++;
+  if (typeof markChanged === "function") markChanged();
+  render();
+}
+
+function removeCustomColumn(colId) {
+  pushUndo();
+  customColumns = customColumns.filter(function (c) { return c.id !== colId; });
+  items.forEach(function (it) { if (it.customData) delete it.customData[colId]; });
+  delete columnFilters[colId];
+  if (typeof markChanged === "function") markChanged();
+  render();
+  if (typeof _renderColManager === "function") _renderColManager();
+}
+
+function renameCustomColumn(colId, newName) {
+  pushUndo();
+  var col = customColumns.find(function (c) { return c.id === colId; });
+  if (col) col.name = newName;
+  if (typeof markChanged === "function") markChanged();
+  render();
+}
+
+function toggleCustomColumn(colId) {
+  var col = customColumns.find(function (c) { return c.id === colId; });
+  if (col) col.visible = !col.visible;
+  if (typeof markChanged === "function") markChanged();
+  render();
+}
+
+function updateCustomColumnCell(itemId, colId, value) {
+  pushUndo();
+  var item = items.find(function (i) { return i.id === itemId; });
+  if (!item) return;
+  if (!item.customData) item.customData = {};
+  item.customData[colId] = value;
+  if (typeof markChanged === "function") markChanged();
+}
+
+function moveCustomColumn(colId, direction) {
+  var idx = customColumns.findIndex(function (c) { return c.id === colId; });
+  if (idx < 0) return;
+  var swapIdx = idx + direction;
+  if (swapIdx < 0 || swapIdx >= customColumns.length) return;
+  pushUndo();
+  var tmp = customColumns[idx];
+  customColumns[idx] = customColumns[swapIdx];
+  customColumns[swapIdx] = tmp;
+  if (typeof markChanged === "function") markChanged();
   render();
 }
 
@@ -514,14 +589,30 @@ function setMilestoneWeek(id, val) {
 function updateMilestoneDate(id, val) {
   const item = items.find((i) => i.id === id);
   if (!item) return;
-  const newWeek = parseYYWWD(val.trim());
-  if (newWeek === null) return;
-
-  const delta = parseFloat((newWeek - item.startWeek).toFixed(1));
-  if (delta === 0) return;
+  const plan = _planYYWWD(val.trim());
+  if (!plan) return;
+  const projectedStartWeek = item.startWeek + (plan.shiftWeeks || 0);
+  const needsTimelineExpansion =
+    (plan.prependYears && plan.prependYears.length > 0) ||
+    (plan.appendYears && plan.appendYears.length > 0);
+  const projectedDelta = parseFloat((plan.absWeek - projectedStartWeek).toFixed(1));
+  if (!needsTimelineExpansion && projectedDelta === 0) return;
 
   pushUndo();
-  item.startWeek = newWeek;
+  _applyYYWWDPlan(plan);
+
+  const updatedItem = items.find((i) => i.id === id);
+  if (!updatedItem) {
+    render();
+    return;
+  }
+  const delta = parseFloat((plan.absWeek - updatedItem.startWeek).toFixed(1));
+  if (delta === 0) {
+    render();
+    return;
+  }
+
+  updatedItem.startWeek = plan.absWeek;
   propagateLinks(id, delta, delta, new Set());
   render();
 }
@@ -621,6 +712,59 @@ function toggleYearVisibility(yi) {
   } else {
     hiddenYears.add(yi);
   }
+  render();
+}
+
+// ── Multi-select bulk actions ─────────────────────────────────
+
+function deleteSelected() {
+  if (selectedIds.size === 0) return;
+  if (!confirm("Delete " + selectedIds.size + " selected item(s)? This cannot be undone.")) return;
+  pushUndo();
+  const allToDelete = new Set();
+  selectedIds.forEach(id => getSubtreeIds(id).forEach(sid => allToDelete.add(sid)));
+  items = items.filter(i => !allToDelete.has(i.id));
+  links = links.filter(l => !allToDelete.has(l.fromId) && !allToDelete.has(l.toId));
+  selectedIds.clear();
+  _lastSelectedId = null;
+  if (typeof _updateMultiselectBar === "function") _updateMultiselectBar();
+  render();
+}
+
+function lockSelected(lock) {
+  if (selectedIds.size === 0) return;
+  pushUndo();
+  items.forEach(i => { if (selectedIds.has(i.id)) i.isLocked = lock; });
+  render();
+}
+
+function recolorSelected(color) {
+  if (selectedIds.size === 0 || !color) return;
+  pushUndo();
+  items.forEach(i => {
+    if (selectedIds.has(i.id) && i.type !== "milestones-group") i.color = color;
+  });
+  render();
+}
+
+function assignSelected(personId) {
+  if (selectedIds.size === 0 || !personId) return;
+  pushUndo();
+  items.forEach(i => {
+    if (selectedIds.has(i.id) && (i.type === "task" || i.type === "project" || i.type === "family")) {
+      if (!i.assignees) i.assignees = [];
+      if (!i.assignees.includes(personId)) i.assignees.push(personId);
+    }
+  });
+  render();
+}
+
+function moveSelected(weekDelta) {
+  if (selectedIds.size === 0 || !weekDelta) return;
+  pushUndo();
+  items.forEach(i => {
+    if (selectedIds.has(i.id)) i.startWeek = Math.max(1, i.startWeek + weekDelta);
+  });
   render();
 }
 

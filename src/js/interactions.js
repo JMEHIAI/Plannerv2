@@ -6,13 +6,33 @@
 
 function startPan(e) {
   if (e.button !== 0) return;
-  if (e.target.closest(
+  const interactiveTarget = e.target.closest(
     'button, input, a, select, textarea, ' +
     '.bar, .range-bar, .resize-handle, .col-resizer, ' +
     '.link-anchor, .settings-panel, .comment-block, ' +
     '.milestone, .milestone-diamond, .milestone-wrapper, ' +
-    '.name-cell, .comment-cell, .drag-handle, .comment-popup'
-  )) return;
+    '.name-cell, .comment-cell, .drag-handle, .comment-popup, ' +
+    '.row-select-cb, #today-line-handle'
+  );
+  if (interactiveTarget) return;
+  const activeEl = document.activeElement;
+  if (
+    activeEl &&
+    activeEl !== e.target &&
+    typeof activeEl.blur === "function" &&
+    (activeEl.matches("input, textarea, select") || activeEl.isContentEditable)
+  ) {
+    activeEl.blur();
+  }
+  const timelineCell = e.target.closest(".timeline-row, .tl-header");
+  if (timelineCell && _todayLineVisible) {
+    const todayLineX = getTodayLineTimelineX();
+    const clickX = _getRelativeTimelineX(e, timelineCell);
+    if (todayLineX !== null && Math.abs(clickX - todayLineX) <= 12) {
+      _startTodayLineDrag(e);
+      return;
+    }
+  }
   const container = e.currentTarget;
   isPanning = true;
   panStartX = e.clientX;
@@ -23,6 +43,38 @@ function startPan(e) {
   e.preventDefault();
   document.addEventListener("mousemove", onPan);
   document.addEventListener("mouseup", stopPan);
+}
+
+function updateTodayLineHoverCursor(e) {
+  const container = document.querySelector(".planner-container");
+  if (!container || isPanning) return;
+
+  const interactiveTarget = e.target.closest(
+    'button, input, a, select, textarea, ' +
+    '.bar, .range-bar, .resize-handle, .col-resizer, ' +
+    '.link-anchor, .settings-panel, .comment-block, ' +
+    '.milestone, .milestone-diamond, .milestone-wrapper, ' +
+    '.name-cell, .comment-cell, .drag-handle, .comment-popup, ' +
+    '.row-select-cb, #today-line-handle'
+  );
+  if (interactiveTarget) {
+    container.style.cursor = "";
+    return;
+  }
+
+  const timelineCell = e.target.closest(".timeline-row, .tl-header");
+  if (!timelineCell || !_todayLineVisible) {
+    container.style.cursor = "";
+    return;
+  }
+
+  const todayLineX = getTodayLineTimelineX();
+  const hoverX = _getRelativeTimelineX(e, timelineCell);
+  if (todayLineX !== null && Math.abs(hoverX - todayLineX) <= 12) {
+    container.style.cursor = "ew-resize";
+  } else {
+    container.style.cursor = "";
+  }
 }
 
 function onPan(e) {
@@ -262,6 +314,20 @@ function startDrag(e, id) {
   }
   addDescendants(id);
 
+  // Co-drag all other selected non-locked items (and their descendants)
+  if (selectedIds.has(id)) {
+    selectedIds.forEach(selId => {
+      if (selId !== id && !draggingItems.includes(selId)) {
+        const selItem = _dragItemsMap.get(selId);
+        if (selItem && selItem.isLocked !== true) {
+          draggingItems.push(selId);
+          initialStartWeeks[selId] = selItem.startWeek;
+          addDescendants(selId);
+        }
+      }
+    });
+  }
+
   // Promote dragged bars to their own compositor layer for smooth transforms
   draggingItems.forEach((itemId) => {
     const el = document.getElementById("block-" + itemId);
@@ -373,7 +439,7 @@ function _updateDragPosition(clientX) {
   // Pixel delta = weeksMoved converted back to cells × cellWidth, preserving clamping.
   let snapPx = 0;
   if (zoomMode === "weeks") snapPx = weeksMoved * cellWidth;
-  else if (zoomMode === "days") snapPx = weeksMoved * 5 * cellWidth;   // 1 week = 5 day-cells × 20px
+  else if (zoomMode === "days") snapPx = weeksMoved * 5 * cellWidth;
   else if (zoomMode === "months") snapPx = snapCells * cellWidth;
   _dragPreviewSnapPx = snapPx;
   if (!_interactionRafId) {
@@ -469,7 +535,15 @@ function startColResize(e, type) {
   e.stopPropagation();
   colResizing = type;
   colResizeStartX = e.clientX;
-  colResizeStartWidth = type === "comment" ? commentWidth : nameWidthBase;
+  if (type === "comment") {
+    colResizeStartWidth = commentWidth;
+  } else if (type === "name") {
+    colResizeStartWidth = nameWidthBase;
+  } else if (type.indexOf("customcol_") === 0) {
+    var ccId = type.replace("customcol_", "");
+    var cc = customColumns.find(function (c) { return c.id === ccId; });
+    colResizeStartWidth = cc ? cc.width : 150;
+  }
 
   document.addEventListener("mousemove", onColResize);
   document.addEventListener("mouseup", stopColResize);
@@ -485,6 +559,25 @@ function onColResize(e) {
     commentWidth = newWidth;
   } else if (colResizing === "name") {
     nameWidthBase = newWidth;
+  } else if (colResizing.indexOf("customcol_") === 0) {
+    var ccId = colResizing.replace("customcol_", "");
+    var cc = customColumns.find(function (c) { return c.id === ccId; });
+    if (cc) {
+      cc.width = newWidth;
+      // Recompute custom cols total and update CSS variable
+      var ccTotalW = 0;
+      customColumns.forEach(function (c) { if (c.visible) ccTotalW += c.width; });
+      gridEl.style.setProperty("--custom-cols-width", ccTotalW + "px");
+      // Rebuild grid template columns: keep timeline width from last render (last token)
+      var lastTemplate = gridEl.style.gridTemplateColumns;
+      var lastParts = lastTemplate.trim().split(/\s+/);
+      var tlW = lastParts[lastParts.length - 1]; // e.g. "3840px"
+      var gridColDef = "var(--comment-width) ";
+      customColumns.forEach(function (c) { if (c.visible) gridColDef += c.width + "px "; });
+      gridColDef += "var(--name-width) " + tlW;
+      gridEl.style.gridTemplateColumns = gridColDef;
+    }
+    return;
   }
 
   const actualCommentWidth = showComments ? commentWidth + "px" : "0px";
@@ -500,6 +593,78 @@ function stopColResize() {
   document.removeEventListener("mouseup", stopColResize);
   document.body.style.cursor = "default";
   render();
+}
+
+// ── Today Line Drag ───────────────────────────────────────────
+
+let _todayDragStartX = 0;
+let _todayDragStartWeek = 0;
+let _suppressRowHighlightUntil = 0;
+
+function _snapTodayLineWeek(wk) {
+  const rawWeek = Math.max(1, wk || 1);
+  const wholeWk = Math.floor(rawWeek);
+  const frac = rawWeek - wholeWk;
+  const snappedFrac = Math.min(Math.round(frac * 5) * 0.2, 0.8);
+  return parseFloat((wholeWk + snappedFrac).toFixed(1));
+}
+
+function _startTodayLineDrag(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
+  _todayDragStartX = e.clientX;
+  _todayDragStartWeek = getTodayLineWeek() || 1;
+  document.addEventListener("mousemove", _onTodayLineDrag);
+  document.addEventListener("mouseup", _stopTodayLineDrag);
+  document.body.style.cursor = "ew-resize";
+}
+
+function _onTodayLineDrag(e) {
+  if (typeof e.buttons === "number" && (e.buttons & 1) === 0) {
+    _stopTodayLineDrag();
+    return;
+  }
+  const zoom = parseFloat(getComputedStyle(document.body).zoom) || 1;
+  const dx = (e.clientX - _todayDragStartX) / zoom;
+  const { cw } = _computeYearLayout();
+  let weekDelta;
+  if (zoomMode === "days") {
+    weekDelta = dx / cw * 0.2;
+  } else if (zoomMode === "months") {
+    weekDelta = dx / cw * (52 / 12);
+  } else {
+    weekDelta = dx / cw;
+  }
+  const rawWk = Math.max(1, _todayDragStartWeek + weekDelta);
+  const newWk = zoomMode === "days"
+    ? parseFloat(rawWk.toFixed(3))
+    : _snapTodayLineWeek(rawWk);
+
+  setTodayLineWeek(newWk);
+
+  // Move today elements directly in the DOM — no full render needed during drag
+  const todayX = getTodayLineTimelineX();
+  if (todayX !== null) {
+    // Header handle
+    const handle = document.getElementById("today-line-handle");
+    if (handle) {
+      const hx = todayX + (zoomMode === "days" ? cw / 2 : 0);
+      handle.style.left = hx + "px";
+    }
+    // Redraw the full canvas (grid lines + today line) — no DOM changes
+    redrawBgCanvas();
+  }
+}
+
+function _stopTodayLineDrag() {
+  document.removeEventListener("mousemove", _onTodayLineDrag);
+  document.removeEventListener("mouseup", _stopTodayLineDrag);
+  if (zoomMode === "days") {
+    setTodayLineWeek(_snapTodayLineWeek(getTodayLineWeek() || 1));
+  }
+  render();
+  document.body.style.cursor = "default";
 }
 
 // ── Block Comment Drag/Resize ──────────────────────────────────
@@ -602,6 +767,7 @@ function updateBlockCommentText(itemId, text) {
   const item = items.find((i) => i.id === itemId);
   if (item && item.blockComment) {
     item.blockComment.text = text;
+    if (typeof markChanged === "function") markChanged();
   }
 }
 
@@ -615,6 +781,7 @@ function closeComment(itemId) {
 
 function deleteComment(itemId) {
   if (confirm("Delete this comment?")) {
+    pushUndo();
     const item = items.find((i) => i.id === itemId);
     if (item) {
       delete item.blockComment;
@@ -889,6 +1056,13 @@ function getCommentLinksHtml(text, compact) {
 function openCommentLink(link) {
   if (!link) return;
   window.open(link, "_blank");
+}
+
+function editCommentLink(wrapEl) {
+  var input = wrapEl.parentElement.querySelector(".comment-input");
+  if (!input) return;
+  input.classList.remove("has-link");
+  input.focus();
 }
 
 // ── Open URLs and Local Folder paths via click inside comments ──
